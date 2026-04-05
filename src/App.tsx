@@ -28,7 +28,8 @@ const RpcCommand = {
   CREATE_UPLOAD: 2,
   GET_MANIFEST: 3,
   DOWNLOAD: 4,
-  SHUTDOWN: 5
+  SHUTDOWN: 5,
+  READ_ENTRY: 6
 } as const
 
 type Tab = 'home' | 'files' | 'photos' | 'account'
@@ -60,6 +61,7 @@ export default function App() {
   const [search, setSearch] = useState('')
   const [inviteInput, setInviteInput] = useState('')
   const [latestInvite, setLatestInvite] = useState('')
+  const [latestWebLink, setLatestWebLink] = useState('')
   const [history, setHistory] = useState<any[]>([])
   const [files, setFiles] = useState<FileRecord[]>([])
   const [starred, setStarred] = useState<Set<string>>(new Set())
@@ -187,7 +189,8 @@ export default function App() {
       }
 
       const result = await rpc.request(RpcCommand.CREATE_UPLOAD, { files: payloadFiles })
-      setLatestInvite(result.invite)
+      setLatestInvite(result.nativeInvite || result.invite)
+      setLatestWebLink(result.webSwarmLink || '')
 
       const now = Date.now()
       setFiles((prev) => {
@@ -199,7 +202,7 @@ export default function App() {
             byteLength: Number(entry.byteLength || 0),
             updatedAt: now,
             source: 'upload',
-            invite: result.invite,
+            invite: result.nativeInvite || result.invite,
             deleted: false
           })
         }
@@ -256,8 +259,12 @@ export default function App() {
       return
     }
 
+    const message = latestWebLink
+      ? `Native invite:\n${latestInvite}\n\nWeb link:\n${latestWebLink}`
+      : latestInvite
+
     await Share.share({
-      message: latestInvite,
+      message,
       url: latestInvite,
       title: 'Pear Drops invite'
     })
