@@ -9,6 +9,8 @@
     "prebuild": "npx expo prebuild",
     "ios": "expo run:ios",
     "android": "expo run:android",
+    "ios:prod-relay": "EXPO_PUBLIC_RELAY_URL=wss://pear-drops.up.railway.app expo run:ios",
+    "android:prod-relay": "EXPO_PUBLIC_RELAY_URL=wss://pear-drops.up.railway.app expo run:android",
     "lint": "lunte",
     "format": "prettier . --write",
     "production:ios": "npx expo run:ios --configuration Release",

@@ -83,6 +83,8 @@ type ActiveHost = {
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
 const METADATA_PATH = `${FileSystem.documentDirectory || ''}peardrops-mobile-metadata.json`
+const DEFAULT_DEV_RELAY = 'ws://localhost:49443'
+const DEFAULT_PROD_RELAY = 'wss://pear-drops.up.railway.app'
 
 type PersistedMetadata = {
   files: FileRecord[]
@@ -92,11 +94,15 @@ type PersistedMetadata = {
   folders: FolderRecord[]
 }
 
+const envRelay =
+  typeof process !== 'undefined' ? String(process.env?.EXPO_PUBLIC_RELAY_URL || '').trim() : ''
+const resolvedRelayUrl = envRelay || (__DEV__ ? DEFAULT_DEV_RELAY : DEFAULT_PROD_RELAY)
+
 const updaterConfig = {
   dev: __DEV__,
   version: '0.1.0',
   upgrade: 'pear://updates-disabled',
-  relayUrl: '',
+  relayUrl: resolvedRelayUrl,
   updates: !__DEV__
 }
 
