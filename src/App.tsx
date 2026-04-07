@@ -9,16 +9,18 @@ import {
   Image,
   Linking,
   Pressable,
+  Platform,
   ScrollView,
   Share,
   StyleSheet,
   Text,
   TextInput,
+  useColorScheme,
   View
 } from 'react-native'
 import { StatusBar } from 'expo-status-bar'
 import * as DocumentPicker from 'expo-document-picker'
-import * as FileSystem from 'expo-file-system'
+import * as FileSystem from 'expo-file-system/legacy'
 import RPC from 'bare-rpc'
 import b4a from 'b4a'
 import { Worklet } from 'react-native-bare-kit'
@@ -36,12 +38,14 @@ const RpcCommand = {
   READ_ENTRY: 6,
   LIST_ACTIVE_HOSTS: 7,
   STOP_HOST: 8,
-  START_HOST_FROM_TRANSFER: 9
+  START_HOST_FROM_TRANSFER: 9,
+  READ_ENTRY_CHUNK: 10
 } as const
 
 type Tab = 'home' | 'files' | 'photos'
 type FilesFilter = 'all' | 'recent' | 'starred' | 'host' | 'deleted'
 type HomeSection = 'recent' | 'starred' | 'host'
+type ThemeMode = 'system' | 'dark' | 'light'
 
 type FileRecord = {
   id: string
@@ -51,6 +55,7 @@ type FileRecord = {
   source: 'upload' | 'download' | 'local'
   invite: string
   path?: string
+  drivePath?: string
   mimeType?: string
   dataBase64?: string
   folderId?: string
@@ -81,10 +86,28 @@ type ActiveHost = {
   online?: boolean
 }
 
+type InviteEntry = {
+  name: string
+  drivePath: string
+  byteLength?: number
+  mimeType?: string
+}
+
+type WorkerActivityBar = {
+  id: string
+  label: string
+  done: number
+  total: number
+  subtitle?: string
+  displayMode?: 'count' | 'bytes'
+}
+
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
 const METADATA_PATH = `${FileSystem.documentDirectory || ''}peardrops-mobile-metadata.json`
 const DEFAULT_DEV_RELAY = 'ws://localhost:49443'
 const DEFAULT_PROD_RELAY = 'wss://pear-drops.up.railway.app'
+const ANDROID_DOWNLOADS_FILE_URI = 'file:///storage/emulated/0/Download'
+let androidDownloadsDirUriCache = ''
 
 type PersistedMetadata = {
   files: FileRecord[]
@@ -92,6 +115,9 @@ type PersistedMetadata = {
   deleted: string[]
   deletedAt: Record<string, number>
   folders: FolderRecord[]
+  hostHistory?: any[]
+  hostHistoryRemoved?: string[]
+  themeMode?: ThemeMode
 }
 
 const envRelay =
@@ -106,14 +132,45 @@ const updaterConfig = {
   updates: !__DEV__
 }
 
+function getTheme(isDark: boolean) {
+  if (isDark) {
+    return {
+      background: '#121212',
+      panel: '#171717',
+      panelSoft: '#1f1f1f',
+      border: '#323232',
+      text: '#f1f3f4',
+      muted: '#a4a7ad',
+      accent: '#2f7df6',
+      danger: '#ff7b7b',
+      inputPlaceholder: '#7f8794'
+    }
+  }
+  return {
+    background: '#f4f5f7',
+    panel: '#ffffff',
+    panelSoft: '#f2f4f8',
+    border: '#d8dce3',
+    text: '#171a21',
+    muted: '#5e6675',
+    accent: '#2f7df6',
+    danger: '#c44949',
+    inputPlaceholder: '#7f8794'
+  }
+}
+
 export default function App() {
+  const systemScheme = useColorScheme()
   const [status, setStatus] = useState('Starting worker...')
+  const [workerLog, setWorkerLog] = useState('Worker logs: waiting for events.')
   const [activeTab, setActiveTab] = useState<Tab>('home')
   const [filesFilter, setFilesFilter] = useState<FilesFilter>('all')
   const [search, setSearch] = useState('')
-  const [inviteInput, setInviteInput] = useState('')
   const [latestInvite, setLatestInvite] = useState('')
   const [history, setHistory] = useState<any[]>([])
+  const [hostHistory, setHostHistory] = useState<any[]>([])
+  const [hostHistoryRemoved, setHostHistoryRemoved] = useState<Set<string>>(new Set())
+  const [selectedHostHistory, setSelectedHostHistory] = useState<Set<string>>(new Set())
   const [activeHosts, setActiveHosts] = useState<ActiveHost[]>([])
   const [hostDetailInvite, setHostDetailInvite] = useState('')
   const [files, setFiles] = useState<FileRecord[]>([])
@@ -132,13 +189,76 @@ export default function App() {
   const [folderAssignIds, setFolderAssignIds] = useState<string[]>([])
   const [hostNameModalVisible, setHostNameModalVisible] = useState(false)
   const [hostNameDraft, setHostNameDraft] = useState('Host Session')
-  const [pendingHostMode, setPendingHostMode] = useState<'selected' | 'history' | ''>('')
-  const [pendingHostTransferId, setPendingHostTransferId] = useState('')
+  const [pendingHostMode, setPendingHostMode] = useState<'selected' | ''>('')
+  const [inviteMode, setInviteMode] = useState(false)
+  const [inviteSource, setInviteSource] = useState('')
+  const [inviteEntries, setInviteEntries] = useState<InviteEntry[]>([])
+  const [inviteSelected, setInviteSelected] = useState<Set<string>>(new Set())
   const previewTranslateY = useRef(new Animated.Value(0)).current
   const [fabOpen, setFabOpen] = useState(false)
   const [customizeOpen, setCustomizeOpen] = useState(false)
   const [homeSections, setHomeSections] = useState<HomeSection[]>(['recent', 'starred', 'host'])
   const [hiddenSections, setHiddenSections] = useState<Set<HomeSection>>(new Set())
+  const [hostingBusy, setHostingBusy] = useState(false)
+  const [workerActivityBars, setWorkerActivityBars] = useState<WorkerActivityBar[]>([])
+  const [themeMode, setThemeMode] = useState<ThemeMode>('system')
+  const isDark =
+    themeMode === 'system' ? systemScheme !== 'light' : themeMode === 'dark'
+  const theme = useMemo(() => getTheme(isDark), [isDark])
+  const themed = useMemo(
+    () => ({
+      container: { backgroundColor: theme.background },
+      panel: { backgroundColor: theme.panel, borderColor: theme.border },
+      panelSoft: { backgroundColor: theme.panelSoft, borderColor: theme.border },
+      text: { color: theme.text },
+      muted: { color: theme.muted },
+      accentBg: { backgroundColor: theme.accent, borderColor: theme.accent },
+      accentText: { color: theme.accent },
+      dangerText: { color: theme.danger },
+      searchInput: {
+        backgroundColor: theme.panelSoft,
+        borderColor: theme.border,
+        color: theme.text
+      }
+    }),
+    [theme]
+  )
+
+  const setWorkerLogMessage = (message: string) => {
+    const text = String(message || '').trim()
+    setWorkerLog(`Worker log: ${text || 'waiting for events.'}`)
+  }
+
+  const upsertWorkerActivityBar = (
+    id: string,
+    label: string,
+    done: number,
+    total: number,
+    options: { subtitle?: string; displayMode?: 'count' | 'bytes' } = {}
+  ) => {
+    const key = String(id || '').trim()
+    if (!key) return
+    const safeTotal = Math.max(1, Number(total || 0))
+    const safeDone = Math.max(0, Math.min(safeTotal, Number(done || 0)))
+    setWorkerActivityBars((prev) => {
+      const next = prev.filter((item) => item.id !== key)
+      next.push({
+        id: key,
+        label: String(label || 'Working...'),
+        done: safeDone,
+        total: safeTotal,
+        subtitle: String(options.subtitle || ''),
+        displayMode: options.displayMode || 'count'
+      })
+      return next
+    })
+  }
+
+  const clearWorkerActivityBar = (id: string) => {
+    const key = String(id || '').trim()
+    if (!key) return
+    setWorkerActivityBars((prev) => prev.filter((item) => item.id !== key))
+  }
 
   const rpc = useMemo(() => {
     const worklet = new Worklet()
@@ -168,17 +288,21 @@ export default function App() {
       try {
         const initial = await requestInitWithRetry(rpc, 4)
         setHistory(initial.transfers || [])
+        setHostHistory((prev) => mergeHostHistory(prev, initial.transfers || []))
         try {
           const hosts = await rpc.request(RpcCommand.LIST_ACTIVE_HOSTS)
           setActiveHosts(hosts.hosts || [])
         } catch {}
         if (initial.updaterError) {
           setStatus(`Ready (${initial.version}) - updater warning: ${initial.updaterError}`)
+          setWorkerLogMessage(`updater warning - ${initial.updaterError}`)
         } else {
           setStatus(`Ready (${initial.version})`)
+          setWorkerLogMessage('worker ready')
         }
       } catch (error: any) {
         setStatus(`Init failed: ${error?.message || String(error)}`)
+        setWorkerLogMessage(`init failed - ${error?.message || String(error)}`)
       }
     })()
 
@@ -197,6 +321,11 @@ export default function App() {
       setDeleted(new Set(stored.deleted || []))
       setDeletedAt(stored.deletedAt || {})
       setFolders(stored.folders || [])
+      setHostHistory(Array.isArray(stored.hostHistory) ? stored.hostHistory : [])
+      setHostHistoryRemoved(new Set(Array.isArray(stored.hostHistoryRemoved) ? stored.hostHistoryRemoved : []))
+      if (stored.themeMode === 'dark' || stored.themeMode === 'light' || stored.themeMode === 'system') {
+        setThemeMode(stored.themeMode)
+      }
       setMetadataLoaded(true)
     })()
   }, [])
@@ -208,10 +337,23 @@ export default function App() {
       starred: Array.from(starred),
       deleted: Array.from(deleted),
       deletedAt,
-      folders
+      folders,
+      hostHistory: hostHistory.slice(0, 300),
+      hostHistoryRemoved: Array.from(hostHistoryRemoved).slice(0, 600),
+      themeMode
     }
     void savePersistedMetadata(payload)
-  }, [files, starred, deleted, deletedAt, folders, metadataLoaded])
+  }, [
+    files,
+    starred,
+    deleted,
+    deletedAt,
+    folders,
+    hostHistory,
+    hostHistoryRemoved,
+    themeMode,
+    metadataLoaded
+  ])
 
   useEffect(() => {
     if (!metadataLoaded) return
@@ -249,9 +391,10 @@ export default function App() {
     const applyInvite = (url: string | null) => {
       const invite = extractInviteUrl(url)
       if (!invite) return
-      setInviteInput(invite)
+      setSearch(invite)
       setActiveTab('files')
       setStatus('Invite captured from deep link')
+      setWorkerLogMessage('deep link invite captured')
     }
 
     const sub = Linking.addEventListener('url', ({ url }) => applyInvite(url))
@@ -314,6 +457,7 @@ export default function App() {
   const refresh = async () => {
     const result = await rpc.request(RpcCommand.LIST_TRANSFERS)
     setHistory(result.transfers || [])
+    setHostHistory((prev) => mergeHostHistory(prev, result.transfers || []))
   }
 
   const refreshHosts = async () => {
@@ -326,32 +470,39 @@ export default function App() {
       const pick = await DocumentPicker.getDocumentAsync({ multiple: true })
       if (pick.canceled || pick.assets.length === 0) return
 
-      setStatus('Preparing files...')
+      upsertWorkerActivityBar('ingest', 'Loading files...', 0, pick.assets.length)
+      setStatus(`Loading ${pick.assets.length} file(s)...`)
+      setWorkerLogMessage('indexing selected files')
+      const now = Date.now()
       const payloadFiles = []
-      for (const asset of pick.assets) {
-        const dataBase64 = await FileSystem.readAsStringAsync(asset.uri, {
-          encoding: FileSystem.EncodingType.Base64
-        })
+      for (let i = 0; i < pick.assets.length; i++) {
+        const asset = pick.assets[i]
         payloadFiles.push({
           id: `local:${Date.now()}:${asset.name}`,
           name: asset.name,
           byteLength: Number(asset.size || 0),
-          updatedAt: Date.now(),
+          updatedAt: now,
           source: 'local',
           invite: '',
-          mimeType: asset.mimeType || 'application/octet-stream',
-          dataBase64
+          path: asset.uri,
+          mimeType: asset.mimeType || guessMime(asset.name)
         })
+        upsertWorkerActivityBar('ingest', 'Loading files...', i + 1, pick.assets.length)
+        if ((i + 1) % 20 === 0) await sleep(0)
       }
       setFiles((prev) => [...payloadFiles, ...prev])
       setStatus(`Added ${payloadFiles.length} file(s). Select and tap Host Upload.`)
+      setWorkerLogMessage('file indexing complete')
       setFabOpen(false)
     } catch (error: any) {
       Alert.alert('Upload failed', error?.message || String(error))
+    } finally {
+      clearWorkerActivityBar('ingest')
     }
   }
 
   const onHostSelected = async (sessionNameRaw: string) => {
+    if (hostingBusy) return
     const sessionName = String(sessionNameRaw || '').trim() || 'Host Session'
     const picked = files.filter((item) => selected.has(item.id) && !deleted.has(item.id))
     if (!picked.length) {
@@ -359,17 +510,9 @@ export default function App() {
       return
     }
 
-    const payload = picked
-      .map((item) =>
-        item.dataBase64
-          ? {
-              name: item.name,
-              mimeType: item.mimeType || 'application/octet-stream',
-              dataBase64: item.dataBase64
-            }
-          : null
-      )
-      .filter(Boolean)
+    const payload = (
+      await Promise.all(picked.map((item) => toUploadPayload(item, rpc, setFiles, deleted)))
+    ).filter(Boolean)
 
     if (!payload.length) {
       Alert.alert('Not hostable', 'Selected files are not available locally for hosting.')
@@ -377,8 +520,32 @@ export default function App() {
     }
 
     try {
-      setStatus('Hosting selected files...')
+      setHostingBusy(true)
+      upsertWorkerActivityBar('host', 'Preparing selected files...', 1, 4)
+      setStatus(`Hosting ${payload.length} selected file(s)...`)
+      setWorkerLogMessage('creating host session')
+      upsertWorkerActivityBar('host', 'Starting host session...', 2, 4)
       const result = await rpc.request(RpcCommand.CREATE_UPLOAD, { files: payload, sessionName })
+      upsertWorkerActivityBar('host', 'Generating invite...', 3, 4)
+      const createdKey = historyEntryKey(
+        result?.transfer || { invite: result?.nativeInvite || result?.invite || '' }
+      )
+      if (createdKey) {
+        setHostHistoryRemoved((prev) => {
+          const next = new Set(prev)
+          next.delete(createdKey)
+          return next
+        })
+      }
+      setHostHistory((prev) =>
+        rememberHostHistory(prev, result?.transfer, {
+          sessionName,
+          manifest: result?.manifest || [],
+          invite: result?.nativeInvite || result?.invite || '',
+          totalBytes: payload.reduce((sum, item: any) => sum + Number(item?.byteLength || 0), 0),
+          fileCount: payload.length
+        })
+      )
       const invite = result.nativeInvite || result.invite
       setLatestInvite(invite)
       setFiles((prev) =>
@@ -393,25 +560,80 @@ export default function App() {
             : item
         )
       )
-      setStatus(`Hosting ${payload.length} file(s)`)
+      upsertWorkerActivityBar('host', 'Host ready', 4, 4)
+      setStatus(`Hosting ready for ${payload.length} file(s).`)
+      setWorkerLogMessage('host session ready')
       await Promise.all([refresh(), refreshHosts()])
     } catch (error: any) {
+      setWorkerLogMessage(`host upload failed - ${error?.message || String(error)}`)
       Alert.alert('Host failed', error?.message || String(error))
+    } finally {
+      setHostingBusy(false)
+      setTimeout(() => clearWorkerActivityBar('host'), 700)
     }
   }
 
   const startHostNamePromptForSelected = () => {
+    if (hostingBusy) return
     setPendingHostMode('selected')
-    setPendingHostTransferId('')
     setHostNameDraft('Host Session')
     setHostNameModalVisible(true)
   }
 
-  const startHostFromHistoryPrompt = (transferId: string, defaultName = 'Host Session') => {
-    setPendingHostMode('history')
-    setPendingHostTransferId(transferId)
-    setHostNameDraft(defaultName)
-    setHostNameModalVisible(true)
+  const restartHostFromHistory = async (item: any) => {
+    const transferId = String(item?.id || item?.transferId || '').trim()
+    if (!transferId) return
+    const sessionName =
+      String(item?.sessionName || item?.sessionLabel || 'Host Session').trim() || 'Host Session'
+    try {
+      setHostingBusy(true)
+      upsertWorkerActivityBar('host', 'Starting host session...', 1, 3)
+      setStatus('Starting host from history...')
+      setWorkerLogMessage('starting host from history')
+      const result = await rpc.request(RpcCommand.START_HOST_FROM_TRANSFER, {
+        transferId,
+        sessionName
+      })
+      upsertWorkerActivityBar('host', 'Preparing invite...', 2, 3)
+      const reopenedKey = historyEntryKey(
+        result?.transfer || { transferId, invite: result?.nativeInvite || result?.invite || '' }
+      )
+      if (reopenedKey) {
+        setSelectedHostHistory((prev) => {
+          const next = new Set(prev)
+          next.delete(reopenedKey)
+          return next
+        })
+      }
+      setHostHistory((prev) =>
+        rememberHostHistory(prev, result?.transfer, {
+          sessionName,
+          manifest: result?.manifest || [],
+          invite: result?.nativeInvite || result?.invite || ''
+        })
+      )
+      const invite = result.nativeInvite || result.invite || ''
+      if (invite) {
+        setLatestInvite(invite)
+        setStatus('Hosting started from history')
+        setWorkerLogMessage('host from history ready')
+      }
+      upsertWorkerActivityBar('host', 'Host ready', 3, 3)
+      if (reopenedKey) {
+        setHostHistoryRemoved((prev) => {
+          const next = new Set(prev)
+          next.delete(reopenedKey)
+          return next
+        })
+      }
+      await Promise.all([refresh(), refreshHosts()])
+    } catch (error: any) {
+      setWorkerLogMessage(`host from history failed - ${error?.message || String(error)}`)
+      Alert.alert('Host failed', error?.message || String(error))
+    } finally {
+      setHostingBusy(false)
+      setTimeout(() => clearWorkerActivityBar('host'), 700)
+    }
   }
 
   const submitHostNameModal = async () => {
@@ -422,65 +644,44 @@ export default function App() {
         await onHostSelected(sessionName)
         return
       }
-      if (pendingHostMode === 'history' && pendingHostTransferId) {
-        setStatus('Starting host from history...')
-        const result = await rpc.request(RpcCommand.START_HOST_FROM_TRANSFER, {
-          transferId: pendingHostTransferId,
-          sessionName
-        })
-        const invite = result.nativeInvite || result.invite || ''
-        if (invite) {
-          setLatestInvite(invite)
-          setStatus('Hosting started from history')
-        }
-        await Promise.all([refresh(), refreshHosts()])
-      }
     } catch (error: any) {
+      setWorkerLogMessage(`host from history failed - ${error?.message || String(error)}`)
       Alert.alert('Host failed', error?.message || String(error))
     } finally {
+      setHostingBusy(false)
+      setTimeout(() => clearWorkerActivityBar('host'), 700)
       setPendingHostMode('')
-      setPendingHostTransferId('')
     }
   }
 
   const dismissHostNameModal = () => {
     setHostNameModalVisible(false)
     setPendingHostMode('')
-    setPendingHostTransferId('')
   }
 
   const onDownload = async () => {
-    const invite = inviteInput.trim()
+    const invite = search.trim()
     if (!invite) {
-      Alert.alert('Invite required', 'Paste a peardrops://invite URL first.')
+      Alert.alert('Invite required', 'Paste a peardrops://invite URL in search first.')
       return
     }
 
     try {
-      setStatus('Joining transfer...')
-      const result = await rpc.request(RpcCommand.DOWNLOAD, { invite })
-
-      const now = Date.now()
-      setFiles((prev) => {
-        const next = prev.slice()
-        for (const entry of result.files || []) {
-          next.unshift({
-            id: `download:${now}:${entry.path || entry.name}`,
-            name: entry.name,
-            byteLength: Number(entry.byteLength || 0),
-            updatedAt: now,
-            source: 'download',
-            invite
-          })
-        }
-        return next
-      })
-
-      setStatus(`Downloaded ${result.files.length} file(s)`)
-      setFabOpen(false)
-      await refresh()
+      setStatus('Loading invite files...')
+      setWorkerLogMessage('loading invite manifest')
+      const manifest = await rpc.request(RpcCommand.GET_MANIFEST, { invite })
+      const entries = Array.isArray(manifest.files) ? manifest.files : []
+      setInviteSource(invite)
+      setInviteEntries(entries)
+      setInviteSelected(
+        new Set(entries.map((item: InviteEntry) => String(item.drivePath || item.name)))
+      )
+      setInviteMode(true)
+      setStatus(`Loaded ${entries.length} invite file(s)`)
+      setWorkerLogMessage('invite manifest loaded')
     } catch (error: any) {
-      Alert.alert('Download failed', error?.message || String(error))
+      setWorkerLogMessage(`invite load failed - ${error?.message || String(error)}`)
+      Alert.alert('Invite load failed', error?.message || String(error))
     }
   }
 
@@ -499,10 +700,269 @@ export default function App() {
     })
   }
 
+  const onSearchAction = async () => {
+    const raw = search.trim()
+    if (!raw) return
+    if (raw.startsWith('peardrops://invite') || raw.startsWith('peardrops-web://join')) {
+      await onDownload()
+      return
+    }
+    setInviteMode(false)
+    setStatus(`Local search for "${raw}"`)
+  }
+
+  const toggleInviteSelect = (entry: InviteEntry) => {
+    const key = String(entry.drivePath || entry.name)
+    setInviteSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const toggleInviteSelectAll = () => {
+    const allSelected =
+      inviteEntries.length > 0 &&
+      inviteEntries.every((entry) => inviteSelected.has(String(entry.drivePath || entry.name)))
+    if (allSelected) {
+      setInviteSelected(new Set())
+      return
+    }
+    setInviteSelected(new Set(inviteEntries.map((entry) => String(entry.drivePath || entry.name))))
+  }
+
+  const downloadInviteSelected = async (
+    mode: 'download' | 'add-selected' | 'add-drive-folder'
+  ) => {
+    const selectedEntries = inviteEntries.filter((entry) =>
+      inviteSelected.has(String(entry.drivePath || entry.name))
+    )
+    const picked = mode === 'add-drive-folder' ? inviteEntries.slice() : selectedEntries
+    if (!picked.length) {
+      Alert.alert('Select files', 'Select one or more drive files first.')
+      return
+    }
+    const shouldDownload = mode === 'download'
+    const shouldAddToApp = mode === 'add-selected' || mode === 'add-drive-folder'
+    setStatus(
+      shouldDownload
+        ? `Downloading ${picked.length} file(s)...`
+        : mode === 'add-drive-folder'
+          ? `Adding ${picked.length} drive file(s) as folder...`
+          : `Adding ${picked.length} selected file(s) to app...`
+    )
+    setWorkerLogMessage(
+      shouldDownload ? 'downloading selected invite files' : 'adding selected drive files to app'
+    )
+    const knownTotalBytes = picked.reduce(
+      (sum, entry) => sum + Math.max(0, Number(entry?.byteLength || 0)),
+      0
+    )
+    const useByteProgress = knownTotalBytes > 0
+    const totalForProgress = useByteProgress ? knownTotalBytes : picked.length
+    let downloadedBytes = 0
+    upsertWorkerActivityBar('download', 'Downloading selected files...', 0, totalForProgress, {
+      subtitle: 'Current file: preparing...',
+      displayMode: useByteProgress ? 'bytes' : 'count'
+    })
+    let folderId = ''
+    if (mode === 'add-drive-folder') {
+      const folder = {
+        id: `folder:${Date.now()}:${Math.random().toString(16).slice(2, 8)}`,
+        name: `Drive ${new Date().toLocaleDateString()}`
+      }
+      setFolders((prev) => [...prev, folder])
+      folderId = folder.id
+    }
+
+    const defaultDir = `${FileSystem.documentDirectory || ''}downloads`
+    let androidDownloadsDirUri = ''
+    let androidDownloadMode: 'direct' | 'saf' = 'direct'
+    if (shouldDownload) {
+      if (Platform.OS === 'android') {
+        const canDirectWrite = await canWriteAndroidPublicDownloads()
+        if (!canDirectWrite) {
+          androidDownloadMode = 'saf'
+          androidDownloadsDirUri = await resolveAndroidDownloadsDirUri()
+          if (!androidDownloadsDirUri) {
+            Alert.alert(
+              'Downloads permission needed',
+              'Grant access to your Downloads folder to save files there.'
+            )
+            return
+          }
+        }
+      } else {
+        await FileSystem.makeDirectoryAsync(defaultDir, { intermediates: true })
+      }
+    }
+
+    try {
+      const now = Date.now()
+      const imported: FileRecord[] = []
+      for (let i = 0; i < picked.length; i++) {
+        const entry = picked[i]
+        upsertWorkerActivityBar(
+          'download',
+          'Downloading selected files...',
+          useByteProgress ? downloadedBytes : i,
+          totalForProgress,
+          {
+            subtitle: `Current file: ${entry.name || `file-${i + 1}`}`,
+            displayMode: useByteProgress ? 'bytes' : 'count'
+          }
+        )
+        const expectedFileBytes = Math.max(0, Number(entry.byteLength || 0))
+        let fileDone = 0
+        const safeName = sanitizeFileName(String(entry.name || `file-${i + 1}`))
+        let localDownloadPath = ''
+        let androidDownloadFileUri = ''
+        if (shouldDownload) {
+          if (Platform.OS === 'android') {
+            if (androidDownloadMode === 'saf') {
+              androidDownloadFileUri = await createAndroidDownloadFileUri(
+                androidDownloadsDirUri,
+                safeName,
+                entry.mimeType || guessMime(safeName)
+              )
+            } else {
+              localDownloadPath = `${ANDROID_DOWNLOADS_FILE_URI}/${safeName}`
+              await FileSystem.deleteAsync(localDownloadPath, { idempotent: true }).catch(() => {})
+            }
+          } else {
+            localDownloadPath = `${defaultDir}/${safeName}`
+            await FileSystem.deleteAsync(localDownloadPath, { idempotent: true }).catch(() => {})
+          }
+        }
+
+        if (expectedFileBytes > 0) {
+          while (fileDone < expectedFileBytes) {
+            const chunk = await rpc.request(RpcCommand.READ_ENTRY_CHUNK, {
+              invite: inviteSource,
+              drivePath: entry.drivePath,
+              offset: fileDone,
+              length: Math.min(256 * 1024, expectedFileBytes - fileDone)
+            })
+            const dataBase64Chunk = String(chunk?.dataBase64 || '')
+            if (!dataBase64Chunk) break
+            const chunkBytes = Math.max(0, Number(chunk?.byteLength || 0))
+            if (!chunkBytes) break
+            if (shouldDownload) {
+              if (Platform.OS === 'android') {
+                if (androidDownloadMode === 'saf') {
+                  await FileSystem.StorageAccessFramework.writeAsStringAsync(
+                    androidDownloadFileUri,
+                    dataBase64Chunk,
+                    {
+                      encoding: FileSystem.EncodingType.Base64,
+                      append: fileDone > 0
+                    }
+                  )
+                } else {
+                  await FileSystem.writeAsStringAsync(localDownloadPath, dataBase64Chunk, {
+                    encoding: FileSystem.EncodingType.Base64,
+                    append: fileDone > 0
+                  })
+                }
+              } else {
+                await FileSystem.writeAsStringAsync(localDownloadPath, dataBase64Chunk, {
+                  encoding: FileSystem.EncodingType.Base64,
+                  append: fileDone > 0
+                })
+              }
+            }
+            fileDone += chunkBytes
+            downloadedBytes += chunkBytes
+            upsertWorkerActivityBar(
+              'download',
+              'Downloading selected files...',
+              useByteProgress ? downloadedBytes : i,
+              totalForProgress,
+              {
+                subtitle: `Current file: ${entry.name || `file-${i + 1}`}`,
+                displayMode: useByteProgress ? 'bytes' : 'count'
+              }
+            )
+          }
+        } else {
+          const read = await rpc.request(RpcCommand.READ_ENTRY, {
+            invite: inviteSource,
+            drivePath: entry.drivePath
+          })
+          const dataBase64 = String(read.dataBase64 || '')
+          fileDone = Math.max(0, Number(read.byteLength || 0))
+          if (shouldDownload && dataBase64) {
+            if (Platform.OS === 'android') {
+              if (androidDownloadMode === 'saf') {
+                await FileSystem.StorageAccessFramework.writeAsStringAsync(
+                  androidDownloadFileUri,
+                  dataBase64,
+                  {
+                    encoding: FileSystem.EncodingType.Base64
+                  }
+                )
+              } else {
+                await FileSystem.writeAsStringAsync(localDownloadPath, dataBase64, {
+                  encoding: FileSystem.EncodingType.Base64
+                })
+              }
+            } else {
+              await FileSystem.writeAsStringAsync(localDownloadPath, dataBase64, {
+                encoding: FileSystem.EncodingType.Base64
+              })
+            }
+          }
+          downloadedBytes += fileDone
+        }
+
+        if (shouldAddToApp) {
+          imported.push({
+            id: `download:${now}:${i}:${safeName}`,
+            name: safeName,
+            byteLength: fileDone,
+            updatedAt: Date.now(),
+            source: 'download',
+            invite: inviteSource,
+            mimeType: entry.mimeType || 'application/octet-stream',
+            dataBase64: '',
+            folderId
+          })
+        }
+        upsertWorkerActivityBar(
+          'download',
+          'Downloading selected files...',
+          useByteProgress ? downloadedBytes : i + 1,
+          totalForProgress,
+          {
+            subtitle: `Current file: ${entry.name || `file-${i + 1}`}`,
+            displayMode: useByteProgress ? 'bytes' : 'count'
+          }
+        )
+      }
+
+      if (imported.length) setFiles((prev) => [...imported, ...prev])
+      await refresh()
+      setStatus(
+        shouldDownload
+          ? Platform.OS === 'android'
+            ? `Downloaded ${picked.length} file(s) to Downloads`
+            : `Downloaded ${picked.length} file(s)`
+          : mode === 'add-drive-folder'
+            ? `Added drive as folder with ${picked.length} file(s)`
+            : `Added ${picked.length} selected file(s) to app`
+      )
+      setWorkerLogMessage(shouldDownload ? 'download completed' : 'drive files added to app')
+    } finally {
+      clearWorkerActivityBar('download')
+    }
+  }
+
   const openSection = (section: HomeSection) => {
     setActiveTab('files')
     setFilesFilter(section)
     setHostDetailInvite('')
+    setSelectedHostHistory(new Set())
     setRecentVisible(10)
     setDeletedVisible(10)
   }
@@ -704,15 +1164,15 @@ export default function App() {
     }[section]
 
     return (
-      <View key={section} style={styles.homeCard}>
+      <View key={section} style={[styles.homeCard, themed.panel]}>
         <View style={styles.homeCardHead}>
-          <Text style={styles.homeCardTitle}>{map.title}</Text>
+          <Text style={[styles.homeCardTitle, themed.text]}>{map.title}</Text>
           <Pressable onPress={() => openSection(section)}>
-            <Text style={styles.linkText}>See all</Text>
+            <Text style={[styles.linkText, themed.accentText]}>See all</Text>
           </Pressable>
         </View>
-        <Text style={styles.homeCardText}>{map.text}</Text>
-        <Text style={styles.homeCardCount}>{sectionCounts[section]} items</Text>
+        <Text style={[styles.homeCardText, themed.muted]}>{map.text}</Text>
+        <Text style={[styles.homeCardCount, themed.accentText]}>{sectionCounts[section]} items</Text>
       </View>
     )
   }
@@ -728,11 +1188,52 @@ export default function App() {
     }
   }
 
+  const removeHistoryItems = (items: any[]) => {
+    const keys = items.map((item) => historyEntryKey(item)).filter(Boolean)
+    if (!keys.length) return
+    const removeSet = new Set(keys)
+    setHostHistory((prev) => prev.filter((item) => !removeSet.has(historyEntryKey(item))))
+    setHostHistoryRemoved((prev) => {
+      const next = new Set(prev)
+      for (const key of keys) next.add(key)
+      return next
+    })
+    setSelectedHostHistory((prev) => {
+      const next = new Set(prev)
+      for (const key of keys) next.delete(key)
+      return next
+    })
+  }
+
+  const startSelectedHistoryHosts = async (rows: any[]) => {
+    const picked = rows.filter((item) => selectedHostHistory.has(historyEntryKey(item)))
+    if (!picked.length) {
+      Alert.alert('Select history', 'Select one or more history items first.')
+      return
+    }
+    for (const item of picked) {
+      // Keep host restart sequence explicit and stable.
+      // eslint-disable-next-line no-await-in-loop
+      await restartHostFromHistory(item)
+    }
+  }
+
+  const toggleSelectHostHistory = (item: any) => {
+    const key = historyEntryKey(item)
+    if (!key) return
+    setSelectedHostHistory((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
   const renderHostContent = () => {
     if (hostDetailInvite) {
       const host = activeHosts.find((item) => item.invite === hostDetailInvite)
       if (!host) {
-        return <Text style={styles.muted}>Host session is no longer active.</Text>
+        return <Text style={[styles.muted, themed.muted]}>Host session is no longer active.</Text>
       }
       const manifest = host.manifest || []
       return (
@@ -756,23 +1257,36 @@ export default function App() {
       )
     }
 
-    const hostHistory = history
-      .filter((item) => item.type === 'upload')
+    const activeInvites = new Set(activeHosts.map((host) => String(host.invite || '')))
+    const activeTransferIds = new Set(activeHosts.map((host) => String(host.transferId || '')))
+    const mergedHostHistory = mergeHostHistory(
+      hostHistory,
+      history.filter((item) => item.type === 'upload')
+    )
+    const hostHistoryRows = mergedHostHistory
+      .filter((item) => !hostHistoryRemoved.has(historyEntryKey(item)))
+      .filter((item) => {
+        const invite = String(item.invite || '')
+        const transferId = String(item.transferId || item.id || '')
+        if (invite && activeInvites.has(invite)) return false
+        if (transferId && activeTransferIds.has(transferId)) return false
+        return true
+      })
       .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
       .slice(0, 15)
 
     return (
       <View style={styles.hostSection}>
-        <Text style={styles.hostSectionTitle}>Active hosts (online)</Text>
+        <Text style={[styles.hostSectionTitle, themed.text]}>Active hosts (online)</Text>
         {activeHosts.length === 0 ? (
-          <Text style={styles.muted}>No active host sessions.</Text>
+          <Text style={[styles.muted, themed.muted]}>No active host sessions.</Text>
         ) : (
           activeHosts.map((host) => (
-            <View key={host.invite} style={styles.hostCard}>
+            <View key={host.invite} style={[styles.hostCard, themed.panel]}>
               <Pressable onPress={() => setHostDetailInvite(host.invite)}>
-                <Text style={styles.hostCardTitle}>{host.sessionLabel || host.invite}</Text>
+                <Text style={[styles.hostCardTitle, themed.text]}>{host.sessionLabel || host.invite}</Text>
               </Pressable>
-              <Text style={styles.fileSub}>
+              <Text style={[styles.fileSub, themed.muted]}>
                 {host.fileCount || 0} files • {formatBytes(Number(host.totalBytes || 0))}
               </Text>
               <View style={styles.hostCardActions}>
@@ -782,7 +1296,7 @@ export default function App() {
                 <Pressable
                   style={styles.rowBtn}
                   onPress={() => {
-                    setInviteInput(host.invite)
+                    setSearch(host.invite)
                     setLatestInvite(host.invite)
                   }}
                 >
@@ -796,11 +1310,43 @@ export default function App() {
           ))
         )}
 
-        <Text style={styles.hostSectionTitle}>History</Text>
-        {hostHistory.length === 0 ? (
-          <Text style={styles.muted}>No host history yet.</Text>
+        <Text style={[styles.hostSectionTitle, themed.text]}>History</Text>
+        {selectedHostHistory.size > 0 ? (
+          <View style={[styles.bulkBar, themed.panel]}>
+            <Text style={[styles.bulkText, themed.muted]}>{selectedHostHistory.size} selected</Text>
+            <Pressable style={styles.rowBtn} onPress={() => void startSelectedHistoryHosts(hostHistoryRows)}>
+              <Text style={styles.rowBtnText}>Start Hosting</Text>
+            </Pressable>
+            <Pressable
+              style={styles.rowBtn}
+              onPress={() => {
+                const picked = hostHistoryRows.filter((item) =>
+                  selectedHostHistory.has(historyEntryKey(item))
+                )
+                if (!picked.length) return
+                Alert.alert(
+                  'Remove selected history?',
+                  `Remove ${picked.length} item(s) from host history?`,
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Remove',
+                      style: 'destructive',
+                      onPress: () => removeHistoryItems(picked)
+                    }
+                  ]
+                )
+              }}
+            >
+              <Text style={[styles.rowBtnText, styles.rowDeleteText]}>Remove</Text>
+            </Pressable>
+          </View>
+        ) : null}
+        {hostHistoryRows.length === 0 ? (
+          <Text style={[styles.muted, themed.muted]}>No host history yet.</Text>
         ) : (
-          hostHistory.map((item) => {
+          hostHistoryRows.map((item) => {
+            const historyKey = historyEntryKey(item)
             const preview = Array.isArray(item.manifest)
               ? item.manifest
                   .slice(0, 2)
@@ -808,28 +1354,43 @@ export default function App() {
                   .join(', ')
               : 'No manifest preview'
             return (
-              <View key={item.id} style={styles.hostCard}>
-                <Text style={styles.hostCardTitle}>
+              <View key={historyKey || String(item.id || item.transferId || Math.random())} style={[styles.hostCard, themed.panel]}>
+                <Text style={[styles.hostCardTitle, themed.text]}>
                   {item.sessionLabel || item.sessionName || item.invite || 'Upload history'}
                 </Text>
-                <Text style={styles.fileSub}>{preview || 'No manifest preview'}</Text>
+                <Text style={[styles.fileSub, themed.muted]}>{preview || 'No manifest preview'}</Text>
                 <View style={styles.hostCardActions}>
+                  <Pressable style={styles.rowBtn} onPress={() => toggleSelectHostHistory(item)}>
+                    <Text style={styles.rowBtnText}>
+                      {selectedHostHistory.has(historyKey) ? '☑' : '☐'}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.rowBtn}
+                    onPress={() => void restartHostFromHistory(item)}
+                  >
+                    <Text style={styles.rowBtnText}>Start hosting</Text>
+                  </Pressable>
                   <Pressable
                     style={styles.rowBtn}
                     onPress={() =>
-                      startHostFromHistoryPrompt(
-                        item.id,
-                        item.sessionName || item.sessionLabel || 'Host Session'
-                      )
+                      Alert.alert('Remove history?', 'Remove this item from host history?', [
+                        { text: 'Cancel', style: 'cancel' },
+                        {
+                          text: 'Remove',
+                          style: 'destructive',
+                          onPress: () => removeHistoryItems([item])
+                        }
+                      ])
                     }
                   >
-                    <Text style={styles.rowBtnText}>Start hosting</Text>
+                    <Text style={[styles.rowBtnText, styles.rowDeleteText]}>Remove</Text>
                   </Pressable>
                   {item.invite ? (
                     <Pressable
                       style={styles.rowBtn}
                       onPress={() => {
-                        setInviteInput(item.invite)
+                        setSearch(item.invite)
                         setLatestInvite(item.invite)
                       }}
                     >
@@ -845,9 +1406,84 @@ export default function App() {
     )
   }
 
+  const renderInviteList = () => {
+    const allSelected =
+      inviteEntries.length > 0 &&
+      inviteEntries.every((entry) => inviteSelected.has(String(entry.drivePath || entry.name)))
+
+    return (
+      <View style={styles.hostSection}>
+        <View style={styles.hostDetailHead}>
+          <Pressable
+            style={styles.rowBtn}
+            onPress={() => {
+              setInviteMode(false)
+              setInviteEntries([])
+              setInviteSelected(new Set())
+            }}
+          >
+            <Text style={styles.rowBtnText}>← Back</Text>
+          </Pressable>
+          <Text style={styles.hostDetailTitle}>View drive</Text>
+        </View>
+        <View style={[styles.bulkBar, themed.panel]}>
+          <Pressable style={styles.rowBtn} onPress={toggleInviteSelectAll}>
+            <Text style={styles.rowBtnText}>{allSelected ? '☑' : '☐'}</Text>
+          </Pressable>
+          <Text style={[styles.bulkText, themed.muted]}>
+            {
+              inviteEntries.filter((entry) =>
+                inviteSelected.has(String(entry.drivePath || entry.name))
+              ).length
+            }{' '}
+            selected
+          </Text>
+          <Pressable style={styles.rowBtn} onPress={() => void downloadInviteSelected('download')}>
+            <Text style={styles.rowBtnText}>Download</Text>
+          </Pressable>
+          <Pressable style={styles.rowBtn} onPress={() => void downloadInviteSelected('add-selected')}>
+            <Text style={styles.rowBtnText}>Add Selected</Text>
+          </Pressable>
+          <Pressable style={styles.rowBtn} onPress={() => void downloadInviteSelected('add-drive-folder')}>
+            <Text style={styles.rowBtnText}>Add Drive</Text>
+          </Pressable>
+        </View>
+        {inviteEntries.map((entry, i) => {
+          const key = String(entry.drivePath || entry.name)
+          const selectedRow = inviteSelected.has(key)
+          return (
+            <View key={`${key}:${i}`} style={[styles.fileRow, themed.panel]}>
+              <Pressable onPress={() => toggleInviteSelect(entry)} style={styles.checkBtn}>
+                <Text style={styles.checkText}>{selectedRow ? '☑' : '☐'}</Text>
+              </Pressable>
+              <View style={styles.previewBox}>
+                <Text style={styles.previewText}>
+                  {fileExt(entry.name || '').toUpperCase() || 'FILE'}
+                </Text>
+              </View>
+              <View style={styles.fileMeta}>
+                <Text style={[styles.fileName, themed.text]}>{entry.name || `File ${i + 1}`}</Text>
+                <Text style={[styles.fileSub, themed.muted]}>{formatBytes(Number(entry.byteLength || 0))}</Text>
+              </View>
+              <Pressable
+                style={styles.rowBtn}
+                onPress={async () => {
+                  setInviteSelected(new Set([key]))
+                  await downloadInviteSelected('download')
+                }}
+              >
+                <Text style={styles.rowBtnText}>↓</Text>
+              </Pressable>
+            </View>
+          )
+        })}
+      </View>
+    )
+  }
+
   const renderFileList = () => {
     if (!visibleFiles.length) {
-      return <Text style={styles.muted}>No files in this section yet.</Text>
+      return <Text style={[styles.muted, themed.muted]}>No files in this section yet.</Text>
     }
 
     return visibleFiles.map((item) => {
@@ -858,7 +1494,7 @@ export default function App() {
       const folderName = folders.find((folder) => folder.id === item.folderId)?.name || ''
       const isDeleted = deleted.has(item.id)
       return (
-        <View key={item.id} style={styles.fileRow}>
+        <View key={item.id} style={[styles.fileRow, themed.panel]}>
           <Pressable onPress={() => toggleSelect(item.id)} style={styles.checkBtn}>
             <Text style={styles.checkText}>{isSelected ? '☑' : '☐'}</Text>
           </Pressable>
@@ -881,11 +1517,11 @@ export default function App() {
             )}
           </Pressable>
           <View style={styles.fileMeta}>
-            <Text style={styles.fileName}>{item.name}</Text>
-            <Text style={styles.fileSub}>
+            <Text style={[styles.fileName, themed.text]}>{item.name}</Text>
+            <Text style={[styles.fileSub, themed.muted]}>
               {formatBytes(item.byteLength)} • {formatDate(item.updatedAt)} • {item.source}
             </Text>
-            {folderName ? <Text style={styles.fileSub}>Folder: {folderName}</Text> : null}
+            {folderName ? <Text style={[styles.fileSub, themed.muted]}>Folder: {folderName}</Text> : null}
           </View>
           <View style={styles.fileActions}>
             <Pressable onPress={() => toggleStar(item.id)} style={styles.rowBtn}>
@@ -931,11 +1567,11 @@ export default function App() {
   }
 
   return (
-    <View style={styles.container}>
-      <StatusBar style='dark' />
+    <View style={[styles.container, themed.container]}>
+      <StatusBar style={isDark ? 'light' : 'dark'} />
 
-      <View style={styles.topHeader}>
-        <Text style={styles.topTitle}>Home</Text>
+      <View style={[styles.topHeader, themed.container]}>
+        <Text style={[styles.topTitle, themed.text]}>Home</Text>
         <View style={styles.topIcons}>
           <Text style={styles.topIcon}>🔔</Text>
           <Text style={styles.topIcon}>⇪</Text>
@@ -945,21 +1581,46 @@ export default function App() {
       <TextInput
         value={search}
         onChangeText={setSearch}
-        placeholder='Search for anything'
-        style={styles.searchInput}
+        placeholder='Search for files or paste invite to view drive'
+        placeholderTextColor={theme.inputPlaceholder}
+        style={[styles.searchInput, themed.searchInput]}
       />
+      <View style={styles.themeModeRow}>
+        {(['system', 'dark', 'light'] as ThemeMode[]).map((mode) => (
+          <Pressable
+            key={mode}
+            style={[
+              styles.themeChip,
+              themed.panelSoft,
+              themeMode === mode && styles.themeChipActive,
+              themeMode === mode && themed.accentBg
+            ]}
+            onPress={() => setThemeMode(mode)}
+          >
+            <Text
+              style={[
+                styles.themeChipText,
+                themed.muted,
+                themeMode === mode && styles.themeChipTextActive
+              ]}
+            >
+              {mode}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {activeTab === 'home' ? (
           <>
             {homeSections.map((section) => renderHomeSectionCard(section))}
 
-            <View style={styles.customizeCard}>
-              <Text style={styles.customizeTitle}>Customize your home screen</Text>
-              <Text style={styles.customizeText}>
+            <View style={[styles.customizeCard, themed.panelSoft, { borderColor: theme.border, borderWidth: 1 }]}>
+              <Text style={[styles.customizeTitle, themed.text]}>Customize your home screen</Text>
+              <Text style={[styles.customizeText, themed.muted]}>
                 Add, remove, or reorder sections to show what matters most.
               </Text>
-              <Pressable style={styles.customizeBtn} onPress={() => setCustomizeOpen((v) => !v)}>
+              <Pressable style={[styles.customizeBtn, themed.panel]} onPress={() => setCustomizeOpen((v) => !v)}>
                 <Text style={styles.customizeBtnText}>
                   {customizeOpen ? 'Done customizing' : 'Customize'}
                 </Text>
@@ -968,7 +1629,7 @@ export default function App() {
               {customizeOpen ? (
                 <View style={styles.customizePanel}>
                   {homeSections.map((section) => (
-                    <View key={`custom-${section}`} style={styles.customRow}>
+                    <View key={`custom-${section}`} style={[styles.customRow, themed.panel]}>
                       <Pressable onPress={() => toggleSectionVisibility(section)}>
                         <Text style={styles.customRowText}>
                           {hiddenSections.has(section) ? 'Show' : 'Hide'} {section}
@@ -998,7 +1659,7 @@ export default function App() {
 
         {activeTab === 'files' ? (
           <>
-            <Text style={styles.filesTitle}>
+            <Text style={[styles.filesTitle, themed.text]}>
               {filesFilter === 'all'
                 ? 'All files'
                 : filesFilter === 'recent'
@@ -1013,22 +1674,26 @@ export default function App() {
             </Text>
 
             <View style={styles.inlineActions}>
-              <Pressable style={styles.primaryBtn} onPress={onUpload}>
+              <Pressable style={[styles.primaryBtn, themed.accentBg]} onPress={onUpload}>
                 <Text style={styles.primaryBtnText}>Add Files</Text>
               </Pressable>
-              <Pressable style={styles.primaryBtn} onPress={startHostNamePromptForSelected}>
-                <Text style={styles.primaryBtnText}>Host Upload</Text>
+              <Pressable style={[styles.secondaryBtn, themed.panelSoft]} onPress={() => void onSearchAction()}>
+                <Text style={[styles.secondaryBtnText, themed.accentText]}>Search</Text>
               </Pressable>
-              <Pressable style={styles.secondaryBtn} onPress={onDownload}>
-                <Text style={styles.secondaryBtnText}>Download</Text>
+              <Pressable style={[styles.secondaryBtn, themed.panelSoft]} onPress={onDownload}>
+                <Text style={[styles.secondaryBtnText, themed.accentText]}>View Drive</Text>
               </Pressable>
             </View>
 
-            {selected.size && filesFilter !== 'host' ? (
+            {selected.size && filesFilter !== 'host' && !inviteMode ? (
               <View style={styles.bulkBar}>
                 <Text style={styles.bulkText}>{selected.size} selected</Text>
-                <Pressable style={styles.rowBtn} onPress={startHostNamePromptForSelected}>
-                  <Text style={styles.rowBtnText}>🔗</Text>
+                <Pressable
+                  style={[styles.rowBtn, hostingBusy && styles.rowBtnDisabled]}
+                  onPress={startHostNamePromptForSelected}
+                  disabled={hostingBusy}
+                >
+                  <Text style={styles.rowBtnText}>{hostingBusy ? '…' : '🔗'}</Text>
                 </Pressable>
                 <Pressable
                   style={styles.rowBtn}
@@ -1149,7 +1814,40 @@ export default function App() {
               </View>
             ) : null}
 
-            {folderFilter ? (
+            <View style={[styles.activityPanel, themed.panel]}>
+              <View style={[styles.inviteRow, themed.panel]}>
+                <Text style={[styles.inviteRowText, themed.text]}>{latestInvite || 'No invite yet'}</Text>
+                <Pressable style={[styles.rowBtn, themed.panelSoft]} onPress={onShareInvite}>
+                  <Text style={styles.rowBtnText}>⧉</Text>
+                </Pressable>
+              </View>
+              <Text style={[styles.status, themed.muted]}>{status}</Text>
+              <Text style={[styles.workerLog, themed.muted]}>{workerLog}</Text>
+              {workerActivityBars.map((bar) => (
+                <View key={bar.id} style={styles.ingestWrap}>
+                  <Text style={[styles.ingestLabel, themed.muted]}>
+                    {bar.label}{' '}
+                    {bar.displayMode === 'bytes'
+                      ? `${Math.round((bar.done / Math.max(bar.total, 1)) * 100)}% (${formatBytes(bar.done)} / ${formatBytes(bar.total)})`
+                      : `${bar.done}/${Math.max(bar.total, 1)}`}
+                  </Text>
+                  {bar.subtitle ? (
+                    <Text style={[styles.ingestSubLabel, themed.muted]}>{bar.subtitle}</Text>
+                  ) : null}
+                  <View style={[styles.ingestTrack, themed.panelSoft]}>
+                    <View
+                      style={[
+                        styles.ingestFill,
+                        themed.accentBg,
+                        { width: `${Math.round((bar.done / Math.max(bar.total, 1)) * 100)}%` }
+                      ]}
+                    />
+                  </View>
+                </View>
+              ))}
+            </View>
+
+            {folderFilter && !inviteMode ? (
               <View style={styles.folderActionRow}>
                 <Text style={styles.folderActionText}>
                   Folder: {folders.find((item) => item.id === folderFilter)?.name || ''}
@@ -1160,108 +1858,143 @@ export default function App() {
               </View>
             ) : null}
 
-            <TextInput
-              value={inviteInput}
-              onChangeText={setInviteInput}
-              placeholder='Paste peardrops://invite link'
-              style={styles.inviteInput}
-              multiline
-            />
+            {!inviteMode ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
+                {(['all', 'recent', 'starred', 'host', 'deleted'] as FilesFilter[]).map(
+                  (filter) => (
+                  <Pressable
+                    key={filter}
+                    style={[
+                      styles.chip,
+                      themed.panelSoft,
+                      filesFilter === filter && styles.chipActive,
+                      filesFilter === filter && themed.accentBg
+                    ]}
+                      onPress={() => {
+                        setFilesFilter(filter)
+                        setInviteMode(false)
+                        setSelectedHostHistory(new Set())
+                        if (filter !== 'host') setHostDetailInvite('')
+                        if (filter === 'recent') setRecentVisible(10)
+                        if (filter === 'deleted') setDeletedVisible(10)
+                        if (filter === 'host') void refreshHosts()
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.chipText,
+                          themed.muted,
+                          filesFilter === filter && styles.chipTextActive
+                        ]}
+                      >
+                        {filter}
+                      </Text>
+                    </Pressable>
+                  )
+                )}
+              </ScrollView>
+            ) : null}
 
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
-              {(['all', 'recent', 'starred', 'host', 'deleted'] as FilesFilter[]).map((filter) => (
+            {!inviteMode ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
                 <Pressable
-                  key={filter}
-                  style={[styles.chip, filesFilter === filter && styles.chipActive]}
-                  onPress={() => {
-                    setFilesFilter(filter)
-                    if (filter !== 'host') setHostDetailInvite('')
-                    if (filter === 'recent') setRecentVisible(10)
-                    if (filter === 'deleted') setDeletedVisible(10)
-                    if (filter === 'host') void refreshHosts()
-                  }}
-                >
-                  <Text style={[styles.chipText, filesFilter === filter && styles.chipTextActive]}>
-                    {filter}
-                  </Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
-              <Pressable
-                style={[styles.chip, folderFilter === '' && styles.chipActive]}
-                onPress={() => setFolderFilter('')}
-              >
-                <Text style={[styles.chipText, folderFilter === '' && styles.chipTextActive]}>
-                  All folders
-                </Text>
-              </Pressable>
-              {folders.map((folder) => (
-                <Pressable
-                  key={folder.id}
-                  style={[styles.chip, folderFilter === folder.id && styles.chipActive]}
-                  onPress={() => setFolderFilter(folder.id)}
+                  style={[
+                    styles.chip,
+                    themed.panelSoft,
+                    folderFilter === '' && styles.chipActive,
+                    folderFilter === '' && themed.accentBg
+                  ]}
+                  onPress={() => setFolderFilter('')}
                 >
                   <Text
-                    style={[styles.chipText, folderFilter === folder.id && styles.chipTextActive]}
+                    style={[
+                      styles.chipText,
+                      themed.muted,
+                      folderFilter === '' && styles.chipTextActive
+                    ]}
                   >
-                    {folder.name}
+                    All folders
                   </Text>
                 </Pressable>
-              ))}
-            </ScrollView>
+                {folders.map((folder) => (
+                  <Pressable
+                    key={folder.id}
+                    style={[
+                      styles.chip,
+                      themed.panelSoft,
+                      folderFilter === folder.id && styles.chipActive,
+                      folderFilter === folder.id && themed.accentBg
+                    ]}
+                    onPress={() => setFolderFilter(folder.id)}
+                  >
+                    <Text
+                      style={[
+                        styles.chipText,
+                        themed.muted,
+                        folderFilter === folder.id && styles.chipTextActive
+                      ]}
+                    >
+                      {folder.name}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            ) : null}
 
             <View style={styles.filesList}>
-              {filesFilter === 'host' ? renderHostContent() : renderFileList()}
+              {inviteMode
+                ? renderInviteList()
+                : filesFilter === 'host'
+                  ? renderHostContent()
+                  : renderFileList()}
             </View>
 
-            {((filesFilter === 'recent' && canLoadMoreRecent) ||
-              (filesFilter === 'deleted' && canLoadMoreDeleted)) && (
-              <Pressable
-                style={styles.secondaryBtn}
-                onPress={() => {
-                  if (filesFilter === 'recent') setRecentVisible((v) => v + 10)
-                  else setDeletedVisible((v) => v + 10)
-                }}
-              >
-                <Text style={styles.secondaryBtnText}>Load more</Text>
-              </Pressable>
-            )}
+            {!inviteMode &&
+              ((filesFilter === 'recent' && canLoadMoreRecent) ||
+                (filesFilter === 'deleted' && canLoadMoreDeleted)) && (
+                <Pressable
+                  style={[styles.secondaryBtn, themed.panelSoft]}
+                  onPress={() => {
+                    if (filesFilter === 'recent') setRecentVisible((v) => v + 10)
+                    else setDeletedVisible((v) => v + 10)
+                  }}
+                >
+                  <Text style={[styles.secondaryBtnText, themed.accentText]}>Load more</Text>
+                </Pressable>
+              )}
           </>
         ) : null}
 
         {activeTab === 'photos' ? (
-          <View style={styles.placeholderCard}>
-            <Text style={styles.placeholderTitle}>Photos</Text>
-            <Text style={styles.muted}>
+          <View style={[styles.placeholderCard, themed.panel]}>
+            <Text style={[styles.placeholderTitle, themed.text]}>Photos</Text>
+            <Text style={[styles.muted, themed.muted]}>
               Photo-specific organization is next. Files still remain available in Files.
             </Text>
           </View>
         ) : null}
 
-        <Text style={styles.status}>{status}</Text>
       </ScrollView>
 
       {fabOpen ? (
-        <View style={styles.fabMenu}>
-          <Pressable style={styles.fabItem} onPress={onUpload}>
-            <Text style={styles.fabItemText}>Upload files</Text>
+        <View style={[styles.fabMenu, themed.panel]}>
+          <Pressable style={[styles.fabItem, themed.panelSoft]} onPress={onUpload}>
+            <Text style={[styles.fabItemText, themed.text]}>Upload files</Text>
           </Pressable>
-          <Pressable style={styles.fabItem} onPress={onDownload}>
-            <Text style={styles.fabItemText}>Download from invite</Text>
+          <Pressable style={[styles.fabItem, themed.panelSoft]} onPress={onDownload}>
+            <Text style={[styles.fabItemText, themed.text]}>View drive invite</Text>
           </Pressable>
-          <Pressable style={styles.fabItem} onPress={onShareInvite}>
-            <Text style={styles.fabItemText}>Share latest invite</Text>
+          <Pressable style={[styles.fabItem, themed.panelSoft]} onPress={onShareInvite}>
+            <Text style={[styles.fabItemText, themed.text]}>Share latest invite</Text>
           </Pressable>
         </View>
       ) : null}
 
-      <Pressable style={styles.fab} onPress={() => setFabOpen((v) => !v)}>
+      <Pressable style={[styles.fab, themed.accentBg]} onPress={() => setFabOpen((v) => !v)}>
         <Text style={styles.fabText}>+</Text>
       </Pressable>
 
-      <View style={styles.bottomBar}>
+      <View style={[styles.bottomBar, themed.panel]}>
         {[
           { key: 'home', label: 'Home' },
           { key: 'files', label: 'Files' },
@@ -1274,7 +2007,14 @@ export default function App() {
               style={styles.bottomItem}
               onPress={() => setActiveTab(item.key as Tab)}
             >
-              <Text style={[styles.bottomText, active && styles.bottomTextActive]}>
+              <Text
+                style={[
+                  styles.bottomText,
+                  themed.muted,
+                  active && styles.bottomTextActive,
+                  active && themed.text
+                ]}
+              >
                 {item.label}
               </Text>
             </Pressable>
@@ -1293,35 +2033,35 @@ export default function App() {
             style={styles.folderModalBackdrop}
             onPress={() => setFolderModalVisible(false)}
           />
-          <View style={styles.folderModalCard}>
-            <Text style={styles.folderModalTitle}>Put In Folder</Text>
-            <Text style={styles.muted}>Select an existing folder or create a new one.</Text>
+          <View style={[styles.folderModalCard, themed.panel]}>
+            <Text style={[styles.folderModalTitle, themed.text]}>Put In Folder</Text>
+            <Text style={[styles.muted, themed.muted]}>Select an existing folder or create a new one.</Text>
             <ScrollView style={styles.folderOptionsScroll}>
               {folders.length ? (
                 folders.map((folder) => (
                   <Pressable
                     key={folder.id}
-                    style={styles.folderOptionBtn}
+                    style={[styles.folderOptionBtn, themed.panelSoft]}
                     onPress={() => applyFolderName(folder.name)}
                   >
-                    <Text style={styles.folderOptionText}>{folder.name}</Text>
+                    <Text style={[styles.folderOptionText, themed.text]}>{folder.name}</Text>
                   </Pressable>
                 ))
               ) : (
-                <Text style={styles.muted}>No folders yet.</Text>
+                <Text style={[styles.muted, themed.muted]}>No folders yet.</Text>
               )}
             </ScrollView>
             <TextInput
               value={folderDraftName}
               onChangeText={setFolderDraftName}
               placeholder='New folder name'
-              style={styles.folderInput}
+              style={[styles.folderInput, themed.panelSoft]}
             />
             <View style={styles.folderModalActions}>
-              <Pressable style={styles.rowBtn} onPress={() => setFolderModalVisible(false)}>
+              <Pressable style={[styles.rowBtn, themed.panelSoft]} onPress={() => setFolderModalVisible(false)}>
                 <Text style={styles.rowBtnText}>Cancel</Text>
               </Pressable>
-              <Pressable style={styles.primaryBtn} onPress={() => applyFolderName(folderDraftName)}>
+              <Pressable style={[styles.primaryBtn, themed.accentBg]} onPress={() => applyFolderName(folderDraftName)}>
                 <Text style={styles.primaryBtnText}>Create + Move</Text>
               </Pressable>
             </View>
@@ -1337,20 +2077,20 @@ export default function App() {
       >
         <View style={styles.folderModalRoot}>
           <Pressable style={styles.folderModalBackdrop} onPress={dismissHostNameModal} />
-          <View style={styles.folderModalCard}>
-            <Text style={styles.folderModalTitle}>Host session name</Text>
-            <Text style={styles.muted}>Final session label: name + date + 4-char random hex.</Text>
+          <View style={[styles.folderModalCard, themed.panel]}>
+            <Text style={[styles.folderModalTitle, themed.text]}>Host session name</Text>
+            <Text style={[styles.muted, themed.muted]}>Final session label: name + date + 4-char random hex.</Text>
             <TextInput
               value={hostNameDraft}
               onChangeText={setHostNameDraft}
               placeholder='Host Session'
-              style={styles.folderInput}
+              style={[styles.folderInput, themed.panelSoft]}
             />
             <View style={styles.folderModalActions}>
-              <Pressable style={styles.rowBtn} onPress={dismissHostNameModal}>
+              <Pressable style={[styles.rowBtn, themed.panelSoft]} onPress={dismissHostNameModal}>
                 <Text style={styles.rowBtnText}>Cancel</Text>
               </Pressable>
-              <Pressable style={styles.primaryBtn} onPress={() => void submitHostNameModal()}>
+              <Pressable style={[styles.primaryBtn, themed.accentBg]} onPress={() => void submitHostNameModal()}>
                 <Text style={styles.primaryBtnText}>Start</Text>
               </Pressable>
             </View>
@@ -1475,7 +2215,145 @@ async function loadPersistedMetadata(): Promise<PersistedMetadata | null> {
       starred: Array.isArray(parsed.starred) ? parsed.starred : [],
       deleted: Array.isArray(parsed.deleted) ? parsed.deleted : [],
       deletedAt: parsed.deletedAt && typeof parsed.deletedAt === 'object' ? parsed.deletedAt : {},
-      folders: Array.isArray(parsed.folders) ? parsed.folders : []
+      folders: Array.isArray(parsed.folders) ? parsed.folders : [],
+      hostHistory: Array.isArray(parsed.hostHistory) ? parsed.hostHistory : [],
+      hostHistoryRemoved: Array.isArray(parsed.hostHistoryRemoved) ? parsed.hostHistoryRemoved : [],
+      themeMode:
+        parsed.themeMode === 'dark' || parsed.themeMode === 'light' || parsed.themeMode === 'system'
+          ? parsed.themeMode
+          : 'system'
+    }
+  } catch {
+    return null
+  }
+}
+
+function rememberHostHistory(existing: any[], transfer: any, fallback: any = {}) {
+  const normalized = normalizeHostHistoryRecord(transfer || fallback, fallback)
+  if (!normalized) return existing
+  return mergeHostHistory([normalized], existing)
+}
+
+function mergeHostHistory(primary: any[], secondary: any[]) {
+  const map = new Map<string, any>()
+  const combined = [...(Array.isArray(primary) ? primary : []), ...(Array.isArray(secondary) ? secondary : [])]
+  for (const entry of combined) {
+    const normalized = normalizeHostHistoryRecord(entry)
+    if (!normalized) continue
+    const key =
+      String(normalized.transferId || normalized.id || '') ||
+      String(normalized.invite || '') ||
+      `${String(normalized.sessionLabel || normalized.sessionName || 'upload')}:${Number(normalized.createdAt || 0)}`
+    if (!key) continue
+    const existing = map.get(key)
+    if (!existing || Number(normalized.createdAt || 0) >= Number(existing.createdAt || 0)) {
+      map.set(key, normalized)
+    }
+  }
+  return Array.from(map.values())
+    .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
+    .slice(0, 300)
+}
+
+function normalizeHostHistoryRecord(entry: any, fallback: any = {}) {
+  if (!entry || typeof entry !== 'object') return null
+  const invite = String(entry.invite || fallback.invite || '')
+  const transferId = String(entry.transferId || fallback.transferId || entry.id || '')
+  const manifest = Array.isArray(entry.manifest)
+    ? entry.manifest
+    : Array.isArray(fallback.manifest)
+      ? fallback.manifest
+      : []
+  return {
+    ...entry,
+    type: 'upload',
+    transferId: transferId || String(entry.id || ''),
+    invite,
+    sessionName: String(entry.sessionName || fallback.sessionName || 'Host Session'),
+    sessionLabel: String(
+      entry.sessionLabel ||
+        fallback.sessionLabel ||
+        entry.sessionName ||
+        fallback.sessionName ||
+        ''
+    ),
+    createdAt: Number(entry.createdAt || fallback.createdAt || Date.now()),
+    totalBytes: Number(entry.totalBytes || fallback.totalBytes || 0),
+    fileCount: Number(entry.fileCount || fallback.fileCount || manifest.length || 0),
+    manifest
+  }
+}
+
+function historyEntryKey(entry: any): string {
+  if (!entry || typeof entry !== 'object') return ''
+  return String(entry.transferId || entry.id || entry.invite || '').trim()
+}
+
+async function toUploadPayload(
+  item: FileRecord,
+  rpc: { request: (command: number, payload?: any) => Promise<any> },
+  setFiles: (updater: (prev: FileRecord[]) => FileRecord[]) => void,
+  deleted: Set<string>
+) {
+  const mimeType = item.mimeType || guessMime(item.name)
+
+  if (typeof item.dataBase64 === 'string') {
+    return {
+      name: item.name,
+      mimeType,
+      dataBase64: item.dataBase64
+    }
+  }
+
+  const localPath = String(item.path || '').trim()
+  if (localPath) {
+    try {
+      const dataBase64 = await FileSystem.readAsStringAsync(localPath, {
+        encoding: FileSystem.EncodingType.Base64
+      })
+      if (dataBase64) {
+        setFiles((prev) =>
+          prev.map((entry) =>
+            entry.id === item.id ? { ...entry, dataBase64, mimeType, path: localPath } : entry
+          )
+        )
+        return {
+          name: item.name,
+          mimeType,
+          dataBase64
+        }
+      }
+    } catch {}
+  }
+
+  if (!item.invite || deleted.has(item.id)) return null
+
+  try {
+    const manifest = await rpc.request(RpcCommand.GET_MANIFEST, { invite: item.invite })
+    const files = Array.isArray(manifest?.files) ? manifest.files : []
+    const match =
+      files.find((entry: any) => String(entry.drivePath || '') === String(item.drivePath || '')) ||
+      files.find((entry: any) => String(entry.name || '') === String(item.name || '')) ||
+      files[0]
+    if (!match?.drivePath) return null
+
+    const read = await rpc.request(RpcCommand.READ_ENTRY, {
+      invite: item.invite,
+      drivePath: match.drivePath
+    })
+    const dataBase64 = String(read?.dataBase64 || '')
+    if (!dataBase64) return null
+    const resolvedMime = item.mimeType || match.mimeType || guessMime(item.name)
+
+    setFiles((prev) =>
+      prev.map((entry) =>
+        entry.id === item.id ? { ...entry, dataBase64, drivePath: match.drivePath, mimeType: resolvedMime } : entry
+      )
+    )
+    return {
+      name: item.name,
+      mimeType: resolvedMime,
+      dataBase64
     }
   } catch {
     return null
@@ -1528,6 +2406,79 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+async function resolveAndroidDownloadsDirUri(): Promise<string> {
+  if (Platform.OS !== 'android') return ''
+  if (androidDownloadsDirUriCache) return androidDownloadsDirUriCache
+  const rootUri = FileSystem.StorageAccessFramework.getUriForDirectoryInRoot('Download')
+  let permission = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync(rootUri)
+  if (!permission.granted) {
+    permission = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync()
+  }
+  if (!permission.granted || !permission.directoryUri) return ''
+  androidDownloadsDirUriCache = String(permission.directoryUri)
+  return androidDownloadsDirUriCache
+}
+
+async function canWriteAndroidPublicDownloads(): Promise<boolean> {
+  if (Platform.OS !== 'android') return false
+  const probePath = `${ANDROID_DOWNLOADS_FILE_URI}/.peardrops-write-probe-${Date.now()}.tmp`
+  try {
+    await FileSystem.writeAsStringAsync(probePath, 'ok', {
+      encoding: FileSystem.EncodingType.UTF8
+    })
+    await FileSystem.deleteAsync(probePath, { idempotent: true }).catch(() => {})
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function createAndroidDownloadFileUri(
+  directoryUri: string,
+  fileName: string,
+  mimeType: string
+): Promise<string> {
+  const safe = sanitizeFileName(fileName)
+  const { namePart, extPart } = splitFileNameExt(safe)
+  const baseName = String(namePart || 'download').trim() || 'download'
+  const ext = String(extPart || '').trim()
+  const fullName = ext ? `${baseName}.${ext}` : baseName
+  const mime = String(mimeType || guessMime(fullName) || 'application/octet-stream')
+
+  let attempt = 0
+  while (attempt < 100) {
+    const suffix = attempt === 0 ? '' : `-${attempt + 1}`
+    try {
+      return await FileSystem.StorageAccessFramework.createFileAsync(
+        directoryUri,
+        `${baseName}${suffix}`,
+        mime
+      )
+    } catch (error: any) {
+      const message = String(error?.message || '')
+      if (!message.toLowerCase().includes('already exists')) throw error
+      attempt += 1
+    }
+  }
+
+  throw new Error('Could not allocate a file in Downloads folder')
+}
+
+function splitFileNameExt(name: string): { namePart: string; extPart: string } {
+  const safe = String(name || '').trim()
+  const idx = safe.lastIndexOf('.')
+  if (idx <= 0 || idx === safe.length - 1) return { namePart: safe, extPart: '' }
+  return {
+    namePart: safe.slice(0, idx),
+    extPart: safe.slice(idx + 1)
+  }
+}
+
+function sanitizeFileName(name: string): string {
+  const fallback = String(name || 'download').trim() || 'download'
+  return fallback.replaceAll(/[\\/:*?"<>|]+/g, '_')
+}
+
 function formatDate(value: number) {
   return new Date(value || Date.now()).toLocaleDateString()
 }
@@ -1542,6 +2493,17 @@ function fileExt(name: string) {
   const idx = String(name || '').lastIndexOf('.')
   if (idx < 0) return ''
   return String(name).slice(idx + 1)
+}
+
+function guessMime(name: string) {
+  const ext = fileExt(name).toLowerCase()
+  if (ext === 'png') return 'image/png'
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+  if (ext === 'gif') return 'image/gif'
+  if (ext === 'webp') return 'image/webp'
+  if (ext === 'mp4') return 'video/mp4'
+  if (ext === 'mov') return 'video/quicktime'
+  return 'application/octet-stream'
 }
 
 const styles = StyleSheet.create({
@@ -1573,10 +2535,38 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     backgroundColor: '#ececec',
     borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#d8dce3',
     paddingHorizontal: 14,
     paddingVertical: 10,
     fontSize: 16,
     color: '#333'
+  },
+  themeModeRow: {
+    marginTop: 8,
+    marginHorizontal: 16,
+    flexDirection: 'row',
+    gap: 8
+  },
+  themeChip: {
+    backgroundColor: '#e9e9e9',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#d8dce3',
+    paddingVertical: 6,
+    paddingHorizontal: 12
+  },
+  themeChipActive: {
+    backgroundColor: '#0f68f5',
+    borderColor: '#0f68f5'
+  },
+  themeChipText: {
+    color: '#5e5e5e',
+    fontWeight: '600',
+    textTransform: 'capitalize'
+  },
+  themeChipTextActive: {
+    color: '#fff'
   },
   scrollContent: {
     paddingBottom: 120,
@@ -1684,6 +2674,24 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginTop: 10
   },
+  inviteRow: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#d9d9d9',
+    borderRadius: 10,
+    backgroundColor: '#fff',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
+  },
+  inviteRowText: {
+    flex: 1,
+    color: '#4b4b4b',
+    fontSize: 12
+  },
   bulkBar: {
     marginHorizontal: 16,
     marginTop: 10,
@@ -1696,6 +2704,38 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     alignItems: 'center',
     gap: 8
+  },
+  activityPanel: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#d9d9d9',
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    padding: 10,
+    gap: 4
+  },
+  ingestWrap: {
+    marginTop: 4
+  },
+  ingestLabel: {
+    fontSize: 12,
+    marginBottom: 4
+  },
+  ingestSubLabel: {
+    fontSize: 11,
+    opacity: 0.9,
+    marginBottom: 4
+  },
+  ingestTrack: {
+    width: '100%',
+    height: 8,
+    borderRadius: 999,
+    overflow: 'hidden'
+  },
+  ingestFill: {
+    height: '100%',
+    width: '0%'
   },
   bulkText: {
     color: '#636363',
@@ -1722,17 +2762,6 @@ const styles = StyleSheet.create({
   secondaryBtnText: {
     color: '#0f68f5',
     fontWeight: '700'
-  },
-  inviteInput: {
-    marginHorizontal: 16,
-    marginTop: 10,
-    minHeight: 70,
-    borderWidth: 1,
-    borderColor: '#d9d9d9',
-    borderRadius: 12,
-    padding: 10,
-    textAlignVertical: 'top',
-    backgroundColor: '#fff'
   },
   chipRow: {
     marginTop: 10,
@@ -1889,6 +2918,9 @@ const styles = StyleSheet.create({
   rowDeleteText: {
     color: '#c44949'
   },
+  rowBtnDisabled: {
+    opacity: 0.5
+  },
   trashIcon: {
     width: 14,
     height: 14,
@@ -1939,8 +2971,10 @@ const styles = StyleSheet.create({
     fontSize: 12
   },
   status: {
-    marginHorizontal: 16,
-    marginTop: 10,
+    color: '#6f6f6f',
+    fontSize: 12
+  },
+  workerLog: {
     color: '#6f6f6f',
     fontSize: 12
   },

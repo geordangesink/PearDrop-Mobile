@@ -13,6 +13,7 @@ async function main() {
   await bootstrapTransferWorker({
     ipc: Bare.IPC,
     baseDir: path.join(baseRoot, 'pear-drops-mobile'),
+    metadataDir: path.join(persistentDir, 'pear-drops-mobile-history'),
     updaterConfig,
     relayUrl: updaterConfig.relayUrl || ''
   })
