@@ -99,6 +99,7 @@ const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
 const METADATA_PATH = `${FileSystem.documentDirectory || ''}peardrops-mobile-metadata.json`
 const DEFAULT_DEV_RELAY = 'ws://localhost:49443'
 const DEFAULT_PROD_RELAY = 'wss://pear-drops.up.railway.app'
+const PUBLIC_SITE_ORIGIN = 'https://pear-drops.vercel.app'
 const ANDROID_DOWNLOADS_FILE_URI = 'file:///storage/emulated/0/Download'
 let androidDownloadsDirUriCache = ''
 
@@ -572,9 +573,9 @@ export default function App() {
   }
 
   const onDownload = async () => {
-    const invite = inviteInput.trim()
+    const invite = extractInviteUrl(inviteInput.trim())
     if (!invite) {
-      Alert.alert('Invite required', 'Paste a peardrops://invite URL first.')
+      Alert.alert('Invite required', 'Paste a valid invite link first.')
       return
     }
 
@@ -603,17 +604,21 @@ export default function App() {
       return
     }
 
-    const message = latestInvite
+    const nativeInvite = extractInviteUrl(latestInvite)
+    const shareLink = nativeInvite
+      ? `${PUBLIC_SITE_ORIGIN}/open/?invite=${encodeURIComponent(nativeInvite)}`
+      : latestInvite
+    const message = shareLink
 
     await Share.share({
       message,
-      url: latestInvite,
+      url: shareLink,
       title: 'Pear Drop invite'
     })
   }
 
   const copyInviteIntoDownload = (invite: string) => {
-    const value = String(invite || '').trim()
+    const value = extractInviteUrl(invite)
     if (!value) return
     setInviteInput(value)
     setLatestInvite(value)
