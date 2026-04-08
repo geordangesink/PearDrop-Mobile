@@ -10,6 +10,7 @@ import {
   Linking,
   Pressable,
   Platform,
+  SafeAreaView,
   ScrollView,
   Share,
   StyleSheet,
@@ -125,27 +126,27 @@ const updaterConfig = {
 function getTheme(isDark: boolean) {
   if (isDark) {
     return {
-      background: '#121212',
-      panel: '#171717',
-      panelSoft: '#1f1f1f',
-      border: '#323232',
-      text: '#f1f3f4',
-      muted: '#a4a7ad',
-      accent: '#2f7df6',
+      background: '#0b0f14',
+      panel: '#111821',
+      panelSoft: '#161f2b',
+      border: '#243142',
+      text: '#eaf0f7',
+      muted: '#92a1b6',
+      accent: '#2793ff',
       danger: '#ff7b7b',
-      inputPlaceholder: '#7f8794'
+      inputPlaceholder: '#6f8098'
     }
   }
   return {
-    background: '#f4f5f7',
+    background: '#f1f4f8',
     panel: '#ffffff',
-    panelSoft: '#f2f4f8',
-    border: '#d8dce3',
-    text: '#171a21',
-    muted: '#5e6675',
-    accent: '#2f7df6',
+    panelSoft: '#f5f8fc',
+    border: '#d7dfea',
+    text: '#111827',
+    muted: '#64748b',
+    accent: '#1f7ae0',
     danger: '#c44949',
-    inputPlaceholder: '#7f8794'
+    inputPlaceholder: '#7b8799'
   }
 }
 
@@ -190,6 +191,7 @@ export default function App() {
       container: { backgroundColor: theme.background },
       panel: { backgroundColor: theme.panel, borderColor: theme.border },
       panelSoft: { backgroundColor: theme.panelSoft, borderColor: theme.border },
+      iconBadge: { borderColor: theme.border, backgroundColor: theme.panel },
       text: { color: theme.text },
       muted: { color: theme.muted },
       accentBg: { backgroundColor: theme.accent, borderColor: theme.accent },
@@ -609,7 +611,7 @@ export default function App() {
     await Share.share({
       message,
       url: latestInvite,
-      title: 'Pear Drops invite'
+      title: 'Pear Drop invite'
     })
   }
 
@@ -902,9 +904,9 @@ export default function App() {
   }
 
   const themeModeMeta = {
-    system: { icon: '🖥', label: 'System' },
-    dark: { icon: '🌙', label: 'Dark' },
-    light: { icon: '☀', label: 'Light' }
+    system: { icon: '◫', label: 'System' },
+    dark: { icon: '◼', label: 'Dark' },
+    light: { icon: '◻', label: 'Light' }
   } as const
 
   const stopActiveHost = async (invite: string) => {
@@ -1345,11 +1347,11 @@ export default function App() {
   )
 
   return (
-    <View style={[styles.container, themed.container]}>
+    <SafeAreaView style={[styles.container, themed.container]}>
       <StatusBar style={isDark ? 'light' : 'dark'} />
 
       <View style={[styles.topHeader, themed.container]}>
-        <Text style={[styles.topTitle, themed.text]}>Pear Drops</Text>
+        <Text style={[styles.topTitle, themed.text]}>Pear Drop</Text>
       </View>
 
       <View style={styles.themeModeRow}>
@@ -1357,9 +1359,12 @@ export default function App() {
           style={[styles.themeDropdownBtn, themed.panelSoft]}
           onPress={() => setThemeDropdownOpen(true)}
         >
-          <Text style={[styles.themeDropdownText, themed.text]}>
-            {themeModeMeta[themeMode].icon} {themeModeMeta[themeMode].label}
-          </Text>
+          <View style={styles.themeLabelRow}>
+            <View style={[styles.themeIconBadge, themed.iconBadge]}>
+              <Text style={[styles.themeGlyph, themed.muted]}>{themeModeMeta[themeMode].icon}</Text>
+            </View>
+            <Text style={[styles.themeDropdownText, themed.text]}>{themeModeMeta[themeMode].label}</Text>
+          </View>
           <Text style={[styles.themeDropdownChevron, themed.muted]}>▾</Text>
         </Pressable>
       </View>
@@ -1405,12 +1410,12 @@ export default function App() {
             />
             <Text style={[styles.filesTitle, themed.text]}>
               {filesFilter === 'all'
-                ? 'All files'
+                ? 'All Files'
                 : filesFilter === 'starred'
                   ? 'Starred'
                   : hostDetailInvite
-                    ? 'Host details'
-                    : 'Host'}
+                    ? 'Host Details'
+                    : 'Hosts'}
             </Text>
 
             <View style={styles.inlineActions}>
@@ -1422,12 +1427,12 @@ export default function App() {
                 onPress={startHostNamePromptForSelected}
                 disabled={hostingBusy || selected.size === 0}
               >
-                <Text style={[styles.secondaryBtnText, themed.accentText]}>
+                <Text style={[styles.secondaryBtnText, themed.text]}>
                   {hostingBusy ? 'Starting...' : 'Host Selected'}
                 </Text>
               </Pressable>
               <Pressable style={[styles.secondaryBtn, themed.panelSoft]} onPress={onShareInvite}>
-                <Text style={[styles.secondaryBtnText, themed.accentText]}>Share Invite</Text>
+                <Text style={[styles.secondaryBtnText, themed.text]}>Share Invite</Text>
               </Pressable>
             </View>
 
@@ -1505,7 +1510,7 @@ export default function App() {
                       filesFilter === filter && styles.chipTextActive
                     ]}
                   >
-                    {filter}
+                    {filter === 'all' ? 'All' : filter === 'starred' ? 'Starred' : 'Hosts'}
                   </Text>
                 </Pressable>
               ))}
@@ -1533,7 +1538,7 @@ export default function App() {
                   style={[styles.secondaryBtn, themed.panelSoft]}
                   onPress={() => void downloadInviteSelected('download')}
                 >
-                  <Text style={[styles.secondaryBtnText, themed.accentText]}>Download Selected</Text>
+                  <Text style={[styles.secondaryBtnText, themed.text]}>Download Selected</Text>
                 </Pressable>
               ) : null}
             </View>
@@ -1559,21 +1564,33 @@ export default function App() {
         animationType='fade'
         onRequestClose={() => setThemeDropdownOpen(false)}
       >
-        <View style={styles.folderModalRoot}>
+        <View style={styles.themeModalRoot}>
           <Pressable style={styles.folderModalBackdrop} onPress={() => setThemeDropdownOpen(false)} />
           <View style={[styles.themeDropdownCard, themed.panel]}>
             {(['system', 'dark', 'light'] as ThemeMode[]).map((mode) => (
               <Pressable
                 key={mode}
-                style={[styles.themeDropdownOption, themed.panelSoft]}
+                style={[
+                  styles.themeDropdownOption,
+                  themed.panelSoft,
+                  mode === themeMode && styles.themeDropdownOptionActive
+                ]}
                 onPress={() => {
                   setThemeMode(mode)
                   setThemeDropdownOpen(false)
                 }}
               >
-                <Text style={[styles.themeDropdownOptionText, themed.text]}>
-                  {themeModeMeta[mode].icon} {themeModeMeta[mode].label}
-                </Text>
+                <View style={styles.themeOptionRow}>
+                  <View style={styles.themeLabelRow}>
+                    <View style={[styles.themeIconBadge, themed.iconBadge]}>
+                      <Text style={[styles.themeGlyph, themed.muted]}>{themeModeMeta[mode].icon}</Text>
+                    </View>
+                    <Text style={[styles.themeDropdownOptionText, themed.text]}>
+                      {themeModeMeta[mode].label}
+                    </Text>
+                  </View>
+                  {mode === themeMode ? <Text style={[styles.themeOptionCheck, themed.text]}>✓</Text> : null}
+                </View>
               </Pressable>
             ))}
           </View>
@@ -1623,7 +1640,7 @@ export default function App() {
           })
         }}
       />
-    </View>
+    </SafeAreaView>
   )
 }
 
@@ -2036,37 +2053,37 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between'
   },
   topTitle: {
-    fontSize: 36,
-    fontWeight: '700',
+    fontSize: 26,
+    fontWeight: '800',
     color: '#121212'
   },
   searchInput: {
     marginHorizontal: 16,
     backgroundColor: '#ececec',
-    borderRadius: 20,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#d8dce3',
     paddingHorizontal: 14,
-    paddingVertical: 10,
-    fontSize: 16,
+    paddingVertical: 11,
+    fontSize: 15,
     color: '#333'
   },
   themeModeRow: {
-    marginTop: 8,
+    marginTop: 2,
     marginHorizontal: 16,
     flexDirection: 'row',
     gap: 8
   },
   mainTabsRow: {
-    marginTop: 10,
+    marginTop: 8,
     marginHorizontal: 16,
     flexDirection: 'row',
     gap: 8
   },
   mainTabBtn: {
     flex: 1,
-    minHeight: 42,
-    borderRadius: 12,
+    minHeight: 44,
+    borderRadius: 13,
     borderWidth: 1,
     borderColor: '#d8dce3',
     alignItems: 'center',
@@ -2076,20 +2093,20 @@ const styles = StyleSheet.create({
     borderColor: '#0f68f5'
   },
   mainTabBtnText: {
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '700',
-    color: '#4c5567'
+    color: '#607086'
   },
   mainTabBtnTextActive: {
     color: '#fff'
   },
   themeDropdownBtn: {
     flex: 1,
-    minHeight: 42,
-    borderRadius: 12,
+    minHeight: 44,
+    borderRadius: 13,
     borderWidth: 1,
     borderColor: '#d8dce3',
-    paddingHorizontal: 12,
+    paddingHorizontal: 13,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between'
@@ -2099,6 +2116,24 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontSize: 14
   },
+  themeLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
+  },
+  themeIconBadge: {
+    width: 20,
+    height: 20,
+    borderRadius: 999,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  themeGlyph: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.2
+  },
   themeDropdownChevron: {
     fontSize: 14
   },
@@ -2107,47 +2142,63 @@ const styles = StyleSheet.create({
     maxWidth: 340,
     borderWidth: 1,
     borderColor: '#d8dce3',
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 8,
     gap: 8
   },
   themeDropdownOption: {
     borderWidth: 1,
     borderColor: '#d8dce3',
-    borderRadius: 10,
+    borderRadius: 11,
     paddingVertical: 10,
     paddingHorizontal: 12
   },
+  themeDropdownOptionActive: {
+    borderColor: '#4b6ea8'
+  },
+  themeOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between'
+  },
+  themeOptionCheck: {
+    fontSize: 13,
+    fontWeight: '700',
+    opacity: 0.9
+  },
   themeDropdownOptionText: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600'
   },
   scrollContent: {
+    paddingTop: 8,
     paddingBottom: 120,
     gap: 10
   },
   filesTitle: {
-    fontSize: 32,
+    fontSize: 20,
     fontWeight: '700',
     color: '#1a1a1a',
     marginHorizontal: 16,
-    marginTop: 8
+    marginTop: 10,
+    marginBottom: 2
   },
   inlineActions: {
     flexDirection: 'row',
-    gap: 10,
+    flexWrap: 'wrap',
+    gap: 8,
     marginHorizontal: 16,
-    marginTop: 10
+    marginTop: 8
   },
   inviteRow: {
     marginHorizontal: 16,
     marginTop: 8,
     borderWidth: 1,
     borderColor: '#d9d9d9',
-    borderRadius: 10,
+    borderRadius: 14,
     backgroundColor: '#fff',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8
@@ -2162,9 +2213,9 @@ const styles = StyleSheet.create({
     marginTop: 10,
     borderWidth: 1,
     borderColor: '#d9d9d9',
-    borderRadius: 12,
+    borderRadius: 14,
     backgroundColor: '#fff',
-    padding: 10,
+    padding: 12,
     flexDirection: 'row',
     flexWrap: 'wrap',
     alignItems: 'center',
@@ -2175,10 +2226,10 @@ const styles = StyleSheet.create({
     marginTop: 8,
     borderWidth: 1,
     borderColor: '#d9d9d9',
-    borderRadius: 12,
+    borderRadius: 14,
     backgroundColor: '#fff',
-    padding: 10,
-    gap: 4
+    padding: 12,
+    gap: 5
   },
   ingestWrap: {
     marginTop: 4
@@ -2208,35 +2259,46 @@ const styles = StyleSheet.create({
   },
   primaryBtn: {
     backgroundColor: '#0f68f5',
-    borderRadius: 999,
+    borderRadius: 12,
+    minHeight: 42,
     paddingVertical: 10,
-    paddingHorizontal: 18
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center'
   },
   primaryBtnText: {
     color: '#fff',
-    fontWeight: '700'
+    fontWeight: '700',
+    fontSize: 14
   },
   secondaryBtn: {
     borderWidth: 1,
-    borderColor: '#0f68f5',
-    borderRadius: 999,
+    borderColor: '#3a4554',
+    borderRadius: 12,
+    minHeight: 42,
     paddingVertical: 10,
-    paddingHorizontal: 16,
-    alignSelf: 'flex-start'
+    paddingHorizontal: 14,
+    alignSelf: 'flex-start',
+    alignItems: 'center',
+    justifyContent: 'center'
   },
   secondaryBtnText: {
     color: '#0f68f5',
-    fontWeight: '700'
+    fontWeight: '700',
+    fontSize: 14
   },
   chipRow: {
-    marginTop: 10,
+    marginTop: 8,
     marginHorizontal: 16
   },
   chip: {
     backgroundColor: '#e9e9e9',
-    borderRadius: 999,
-    paddingVertical: 8,
+    borderRadius: 10,
+    minHeight: 36,
+    paddingVertical: 7,
     paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
     marginRight: 8
   },
   chipActive: {
@@ -2245,15 +2307,15 @@ const styles = StyleSheet.create({
   chipText: {
     color: '#5e5e5e',
     fontWeight: '600',
-    textTransform: 'capitalize'
+    fontSize: 13
   },
   chipTextActive: {
     color: '#fff'
   },
   filesList: {
-    marginTop: 12,
+    marginTop: 8,
     marginHorizontal: 16,
-    gap: 8
+    gap: 10
   },
   hostRecentSeparator: {
     marginTop: 6,
@@ -2274,7 +2336,9 @@ const styles = StyleSheet.create({
   },
   hostCard: {
     backgroundColor: '#fff',
-    borderRadius: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#d8dce3',
     padding: 12,
     gap: 6
   },
@@ -2300,7 +2364,9 @@ const styles = StyleSheet.create({
   },
   hostFileRow: {
     backgroundColor: '#fff',
-    borderRadius: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#d8dce3',
     padding: 10,
     gap: 4
   },
@@ -2308,9 +2374,11 @@ const styles = StyleSheet.create({
     marginHorizontal: 16,
     marginTop: 8,
     backgroundColor: '#fff',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#d8dce3',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center'
@@ -2321,12 +2389,15 @@ const styles = StyleSheet.create({
   },
   fileRow: {
     backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#d8dce3',
+    padding: 11,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 10
+    gap: 10,
+    minHeight: 84
   },
   fileMeta: {
     flex: 1,
@@ -2336,14 +2407,16 @@ const styles = StyleSheet.create({
     marginRight: 2
   },
   checkText: {
-    fontSize: 18,
+    fontSize: 17,
     color: '#454545'
   },
   previewBox: {
-    width: 48,
-    height: 48,
-    borderRadius: 10,
+    width: 54,
+    height: 54,
+    borderRadius: 12,
     backgroundColor: '#eef0f3',
+    borderWidth: 1,
+    borderColor: '#dce2ea',
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden'
@@ -2359,25 +2432,32 @@ const styles = StyleSheet.create({
   },
   fileName: {
     fontWeight: '700',
+    fontSize: 15,
     color: '#1f1f1f'
   },
   fileSub: {
     color: '#717171',
-    fontSize: 12
+    fontSize: 13
   },
   fileActions: {
     flexDirection: 'row',
-    gap: 6
+    gap: 8
   },
   rowBtn: {
     backgroundColor: '#efefef',
-    borderRadius: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#d5dbe3',
+    minWidth: 34,
+    minHeight: 34,
     paddingVertical: 6,
-    paddingHorizontal: 9
+    paddingHorizontal: 9,
+    alignItems: 'center',
+    justifyContent: 'center'
   },
   rowBtnText: {
     color: '#444',
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '600'
   },
   rowDeleteText: {
@@ -2437,7 +2517,8 @@ const styles = StyleSheet.create({
   },
   status: {
     color: '#6f6f6f',
-    fontSize: 12
+    fontSize: 12,
+    fontWeight: '600'
   },
   workerLog: {
     color: '#6f6f6f',
@@ -2485,6 +2566,12 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     padding: 20
+  },
+  themeModalRoot: {
+    flex: 1,
+    justifyContent: 'flex-start',
+    paddingHorizontal: 20,
+    paddingTop: 118
   },
   folderModalBackdrop: {
     ...StyleSheet.absoluteFillObject,

@@ -1,6 +1,6 @@
 {
   "name": "pear-drops-mobile",
-  "productName": "Pear Drops",
+  "productName": "Pear Drop",
   "version": "0.1.0",
   "upgrade": "pear://updates-disabled",
   "main": "index.ts",

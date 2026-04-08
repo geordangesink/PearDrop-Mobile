@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Hello Pear React Native",
-    "slug": "hello-pear-react-native",
+    "name": "Pear Drop",
+    "slug": "pear-drop",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -24,7 +24,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anonymous.hello-pear-react-native"
+      "bundleIdentifier": "com.anonymous.peardrop"
     },
     "android": {
       "adaptiveIcon": {
@@ -32,7 +32,7 @@
         "backgroundColor": "#ffffff"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.hellopearreactnative"
+      "package": "com.anonymous.peardrop"
     },
     "web": {
       "favicon": "./assets/favicon.png"
