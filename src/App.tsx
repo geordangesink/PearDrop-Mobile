@@ -95,7 +95,6 @@ type WorkerActivityBar = {
   displayMode?: 'count' | 'bytes'
 }
 
-const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
 const METADATA_PATH = `${FileSystem.documentDirectory || ''}peardrops-mobile-metadata.json`
 const DEFAULT_DEV_RELAY = 'ws://localhost:49443'
 const DEFAULT_PROD_RELAY = 'wss://pear-drops.up.railway.app'
