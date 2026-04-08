@@ -42,10 +42,9 @@ const RpcCommand = {
   READ_ENTRY_CHUNK: 10
 } as const
 
-type Tab = 'home' | 'files' | 'photos'
-type FilesFilter = 'all' | 'recent' | 'starred' | 'host' | 'deleted'
-type HomeSection = 'recent' | 'starred' | 'host'
+type FilesFilter = 'all' | 'starred' | 'host'
 type ThemeMode = 'system' | 'dark' | 'light'
+type MainTab = 'upload' | 'download'
 
 type FileRecord = {
   id: string
@@ -58,13 +57,6 @@ type FileRecord = {
   drivePath?: string
   mimeType?: string
   dataBase64?: string
-  folderId?: string
-  deleted?: boolean
-}
-
-type FolderRecord = {
-  id: string
-  name: string
 }
 
 type HostManifestEntry = {
@@ -112,9 +104,7 @@ let androidDownloadsDirUriCache = ''
 type PersistedMetadata = {
   files: FileRecord[]
   starred: string[]
-  deleted: string[]
-  deletedAt: Record<string, number>
-  folders: FolderRecord[]
+  starredHosts?: string[]
   hostHistory?: any[]
   hostHistoryRemoved?: string[]
   themeMode?: ThemeMode
@@ -163,9 +153,10 @@ export default function App() {
   const systemScheme = useColorScheme()
   const [status, setStatus] = useState('Starting worker...')
   const [workerLog, setWorkerLog] = useState('Worker logs: waiting for events.')
-  const [activeTab, setActiveTab] = useState<Tab>('home')
   const [filesFilter, setFilesFilter] = useState<FilesFilter>('all')
-  const [search, setSearch] = useState('')
+  const [localSearch, setLocalSearch] = useState('')
+  const [inviteInput, setInviteInput] = useState('')
+  const [mainTab, setMainTab] = useState<MainTab>('upload')
   const [latestInvite, setLatestInvite] = useState('')
   const [history, setHistory] = useState<any[]>([])
   const [hostHistory, setHostHistory] = useState<any[]>([])
@@ -175,18 +166,10 @@ export default function App() {
   const [hostDetailInvite, setHostDetailInvite] = useState('')
   const [files, setFiles] = useState<FileRecord[]>([])
   const [starred, setStarred] = useState<Set<string>>(new Set())
-  const [deleted, setDeleted] = useState<Set<string>>(new Set())
-  const [deletedAt, setDeletedAt] = useState<Record<string, number>>({})
+  const [starredHosts, setStarredHosts] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [folders, setFolders] = useState<FolderRecord[]>([])
-  const [folderFilter, setFolderFilter] = useState('')
-  const [recentVisible, setRecentVisible] = useState(10)
-  const [deletedVisible, setDeletedVisible] = useState(10)
   const [previewFile, setPreviewFile] = useState<FileRecord | null>(null)
   const [metadataLoaded, setMetadataLoaded] = useState(false)
-  const [folderModalVisible, setFolderModalVisible] = useState(false)
-  const [folderDraftName, setFolderDraftName] = useState('')
-  const [folderAssignIds, setFolderAssignIds] = useState<string[]>([])
   const [hostNameModalVisible, setHostNameModalVisible] = useState(false)
   const [hostNameDraft, setHostNameDraft] = useState('Host Session')
   const [pendingHostMode, setPendingHostMode] = useState<'selected' | ''>('')
@@ -195,13 +178,10 @@ export default function App() {
   const [inviteEntries, setInviteEntries] = useState<InviteEntry[]>([])
   const [inviteSelected, setInviteSelected] = useState<Set<string>>(new Set())
   const previewTranslateY = useRef(new Animated.Value(0)).current
-  const [fabOpen, setFabOpen] = useState(false)
-  const [customizeOpen, setCustomizeOpen] = useState(false)
-  const [homeSections, setHomeSections] = useState<HomeSection[]>(['recent', 'starred', 'host'])
-  const [hiddenSections, setHiddenSections] = useState<Set<HomeSection>>(new Set())
   const [hostingBusy, setHostingBusy] = useState(false)
   const [workerActivityBars, setWorkerActivityBars] = useState<WorkerActivityBar[]>([])
   const [themeMode, setThemeMode] = useState<ThemeMode>('system')
+  const [themeDropdownOpen, setThemeDropdownOpen] = useState(false)
   const isDark =
     themeMode === 'system' ? systemScheme !== 'light' : themeMode === 'dark'
   const theme = useMemo(() => getTheme(isDark), [isDark])
@@ -225,7 +205,7 @@ export default function App() {
   )
 
   const setWorkerLogMessage = (message: string) => {
-    const text = String(message || '').trim()
+    const text = redactInviteText(String(message || '').trim())
     setWorkerLog(`Worker log: ${text || 'waiting for events.'}`)
   }
 
@@ -318,9 +298,7 @@ export default function App() {
       }
       setFiles(stored.files || [])
       setStarred(new Set(stored.starred || []))
-      setDeleted(new Set(stored.deleted || []))
-      setDeletedAt(stored.deletedAt || {})
-      setFolders(stored.folders || [])
+      setStarredHosts(new Set(Array.isArray(stored.starredHosts) ? stored.starredHosts : []))
       setHostHistory(Array.isArray(stored.hostHistory) ? stored.hostHistory : [])
       setHostHistoryRemoved(new Set(Array.isArray(stored.hostHistoryRemoved) ? stored.hostHistoryRemoved : []))
       if (stored.themeMode === 'dark' || stored.themeMode === 'light' || stored.themeMode === 'system') {
@@ -335,9 +313,7 @@ export default function App() {
     const payload: PersistedMetadata = {
       files: files.slice(-600),
       starred: Array.from(starred),
-      deleted: Array.from(deleted),
-      deletedAt,
-      folders,
+      starredHosts: Array.from(starredHosts).slice(0, 300),
       hostHistory: hostHistory.slice(0, 300),
       hostHistoryRemoved: Array.from(hostHistoryRemoved).slice(0, 600),
       themeMode
@@ -346,9 +322,7 @@ export default function App() {
   }, [
     files,
     starred,
-    deleted,
-    deletedAt,
-    folders,
+    starredHosts,
     hostHistory,
     hostHistoryRemoved,
     themeMode,
@@ -356,43 +330,11 @@ export default function App() {
   ])
 
   useEffect(() => {
-    if (!metadataLoaded) return
-    const now = Date.now()
-    const expiredIds = Array.from(deleted).filter((id) => {
-      const ts = Number(deletedAt[id] || 0)
-      return ts > 0 && now - ts >= THIRTY_DAYS_MS
-    })
-    if (!expiredIds.length) return
-    const removeSet = new Set(expiredIds)
-    setFiles((prev) => prev.filter((item) => !removeSet.has(item.id)))
-    setDeleted((prev) => {
-      const next = new Set(prev)
-      for (const id of expiredIds) next.delete(id)
-      return next
-    })
-    setStarred((prev) => {
-      const next = new Set(prev)
-      for (const id of expiredIds) next.delete(id)
-      return next
-    })
-    setSelected((prev) => {
-      const next = new Set(prev)
-      for (const id of expiredIds) next.delete(id)
-      return next
-    })
-    setDeletedAt((prev) => {
-      const next = { ...prev }
-      for (const id of expiredIds) delete next[id]
-      return next
-    })
-  }, [metadataLoaded, deleted, deletedAt])
-
-  useEffect(() => {
     const applyInvite = (url: string | null) => {
       const invite = extractInviteUrl(url)
       if (!invite) return
-      setSearch(invite)
-      setActiveTab('files')
+      setInviteInput(invite)
+      setMainTab('download')
       setStatus('Invite captured from deep link')
       setWorkerLogMessage('deep link invite captured')
     }
@@ -409,15 +351,9 @@ export default function App() {
   }, [filesFilter])
 
   const visibleFiles = useMemo(() => {
-    const q = search.trim().toLowerCase()
+    const q = localSearch.trim().toLowerCase()
 
     const filtered = files.filter((item) => {
-      const deletedMatch = deleted.has(item.id)
-      if (filesFilter === 'deleted') return deletedMatch
-      if (deletedMatch) return false
-      if (folderFilter && item.folderId !== folderFilter) return false
-
-      if (filesFilter === 'recent') return true
       if (filesFilter === 'starred') return starred.has(item.id)
       if (filesFilter === 'host') return item.source === 'upload' || Boolean(item.invite)
       return true
@@ -426,33 +362,11 @@ export default function App() {
     const sorted = filtered
       .slice()
       .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
-      .slice(
-        0,
-        filesFilter === 'recent' ? recentVisible : filesFilter === 'deleted' ? deletedVisible : 200
-      )
+      .slice(0, 200)
 
     if (!q) return sorted
     return sorted.filter((item) => item.name.toLowerCase().includes(q))
-  }, [files, filesFilter, search, starred, folderFilter, deleted, recentVisible, deletedVisible])
-
-  const sectionCounts = useMemo(() => {
-    const active = files.filter((item) => !deleted.has(item.id))
-    return {
-      recent: Math.min(10, active.length),
-      starred: active.filter((item) => starred.has(item.id)).length,
-      host: activeHosts.length
-    }
-  }, [files, starred, deleted, activeHosts.length])
-
-  const canLoadMoreRecent = useMemo(() => {
-    const total = files.filter((item) => !deleted.has(item.id)).length
-    return recentVisible < total
-  }, [files, deleted, recentVisible])
-
-  const canLoadMoreDeleted = useMemo(() => {
-    const total = files.filter((item) => deleted.has(item.id)).length
-    return deletedVisible < total
-  }, [files, deleted, deletedVisible])
+  }, [files, filesFilter, localSearch, starred])
 
   const refresh = async () => {
     const result = await rpc.request(RpcCommand.LIST_TRANSFERS)
@@ -474,7 +388,7 @@ export default function App() {
       setStatus(`Loading ${pick.assets.length} file(s)...`)
       setWorkerLogMessage('indexing selected files')
       const now = Date.now()
-      const payloadFiles = []
+      const payloadFiles: FileRecord[] = []
       for (let i = 0; i < pick.assets.length; i++) {
         const asset = pick.assets[i]
         payloadFiles.push({
@@ -493,7 +407,6 @@ export default function App() {
       setFiles((prev) => [...payloadFiles, ...prev])
       setStatus(`Added ${payloadFiles.length} file(s). Select and tap Host Upload.`)
       setWorkerLogMessage('file indexing complete')
-      setFabOpen(false)
     } catch (error: any) {
       Alert.alert('Upload failed', error?.message || String(error))
     } finally {
@@ -504,14 +417,14 @@ export default function App() {
   const onHostSelected = async (sessionNameRaw: string) => {
     if (hostingBusy) return
     const sessionName = String(sessionNameRaw || '').trim() || 'Host Session'
-    const picked = files.filter((item) => selected.has(item.id) && !deleted.has(item.id))
+    const picked = files.filter((item) => selected.has(item.id))
     if (!picked.length) {
       Alert.alert('Select files', 'Select one or more files first.')
       return
     }
 
     const payload = (
-      await Promise.all(picked.map((item) => toUploadPayload(item, rpc, setFiles, deleted)))
+      await Promise.all(picked.map((item) => toUploadPayload(item, rpc, setFiles)))
     ).filter(Boolean)
 
     if (!payload.length) {
@@ -550,7 +463,7 @@ export default function App() {
       setLatestInvite(invite)
       setFiles((prev) =>
         prev.map((item) =>
-          selected.has(item.id) && !deleted.has(item.id)
+          selected.has(item.id)
             ? {
                 ...item,
                 source: 'upload',
@@ -561,7 +474,7 @@ export default function App() {
         )
       )
       upsertWorkerActivityBar('host', 'Host ready', 4, 4)
-      setStatus(`Hosting ready for ${payload.length} file(s).`)
+      setStatus('upload host created.')
       setWorkerLogMessage('host session ready')
       await Promise.all([refresh(), refreshHosts()])
     } catch (error: any) {
@@ -615,7 +528,7 @@ export default function App() {
       const invite = result.nativeInvite || result.invite || ''
       if (invite) {
         setLatestInvite(invite)
-        setStatus('Hosting started from history')
+        setStatus('upload host created.')
         setWorkerLogMessage('host from history ready')
       }
       upsertWorkerActivityBar('host', 'Host ready', 3, 3)
@@ -660,9 +573,9 @@ export default function App() {
   }
 
   const onDownload = async () => {
-    const invite = search.trim()
+    const invite = inviteInput.trim()
     if (!invite) {
-      Alert.alert('Invite required', 'Paste a peardrops://invite URL in search first.')
+      Alert.alert('Invite required', 'Paste a peardrops://invite URL first.')
       return
     }
 
@@ -700,15 +613,24 @@ export default function App() {
     })
   }
 
-  const onSearchAction = async () => {
-    const raw = search.trim()
-    if (!raw) return
-    if (raw.startsWith('peardrops://invite') || raw.startsWith('peardrops-web://join')) {
-      await onDownload()
-      return
-    }
-    setInviteMode(false)
-    setStatus(`Local search for "${raw}"`)
+  const copyInviteIntoDownload = (invite: string) => {
+    const value = String(invite || '').trim()
+    if (!value) return
+    setInviteInput(value)
+    setLatestInvite(value)
+    setMainTab('download')
+    setStatus('Invite copied to Download tab.')
+  }
+
+  const toggleStarHostInvite = (invite: string) => {
+    const value = String(invite || '').trim()
+    if (!value) return
+    setStarredHosts((prev) => {
+      const next = new Set(prev)
+      if (next.has(value)) next.delete(value)
+      else next.add(value)
+      return next
+    })
   }
 
   const toggleInviteSelect = (entry: InviteEntry) => {
@@ -732,25 +654,21 @@ export default function App() {
     setInviteSelected(new Set(inviteEntries.map((entry) => String(entry.drivePath || entry.name))))
   }
 
-  const downloadInviteSelected = async (
-    mode: 'download' | 'add-selected' | 'add-drive-folder'
-  ) => {
+  const downloadInviteSelected = async (mode: 'download' | 'add-selected') => {
     const selectedEntries = inviteEntries.filter((entry) =>
       inviteSelected.has(String(entry.drivePath || entry.name))
     )
-    const picked = mode === 'add-drive-folder' ? inviteEntries.slice() : selectedEntries
+    const picked = selectedEntries
     if (!picked.length) {
       Alert.alert('Select files', 'Select one or more drive files first.')
       return
     }
     const shouldDownload = mode === 'download'
-    const shouldAddToApp = mode === 'add-selected' || mode === 'add-drive-folder'
+    const shouldAddToApp = mode === 'add-selected'
     setStatus(
       shouldDownload
         ? `Downloading ${picked.length} file(s)...`
-        : mode === 'add-drive-folder'
-          ? `Adding ${picked.length} drive file(s) as folder...`
-          : `Adding ${picked.length} selected file(s) to app...`
+        : `Adding ${picked.length} selected file(s) to app...`
     )
     setWorkerLogMessage(
       shouldDownload ? 'downloading selected invite files' : 'adding selected drive files to app'
@@ -766,16 +684,6 @@ export default function App() {
       subtitle: 'Current file: preparing...',
       displayMode: useByteProgress ? 'bytes' : 'count'
     })
-    let folderId = ''
-    if (mode === 'add-drive-folder') {
-      const folder = {
-        id: `folder:${Date.now()}:${Math.random().toString(16).slice(2, 8)}`,
-        name: `Drive ${new Date().toLocaleDateString()}`
-      }
-      setFolders((prev) => [...prev, folder])
-      folderId = folder.id
-    }
-
     const defaultDir = `${FileSystem.documentDirectory || ''}downloads`
     let androidDownloadsDirUri = ''
     let androidDownloadMode: 'direct' | 'saf' = 'direct'
@@ -925,8 +833,7 @@ export default function App() {
             source: 'download',
             invite: inviteSource,
             mimeType: entry.mimeType || 'application/octet-stream',
-            dataBase64: '',
-            folderId
+            dataBase64: ''
           })
         }
         upsertWorkerActivityBar(
@@ -948,9 +855,7 @@ export default function App() {
           ? Platform.OS === 'android'
             ? `Downloaded ${picked.length} file(s) to Downloads`
             : `Downloaded ${picked.length} file(s)`
-          : mode === 'add-drive-folder'
-            ? `Added drive as folder with ${picked.length} file(s)`
-            : `Added ${picked.length} selected file(s) to app`
+          : `Added ${picked.length} selected file(s) to app`
       )
       setWorkerLogMessage(shouldDownload ? 'download completed' : 'drive files added to app')
     } finally {
@@ -958,13 +863,20 @@ export default function App() {
     }
   }
 
-  const openSection = (section: HomeSection) => {
-    setActiveTab('files')
-    setFilesFilter(section)
-    setHostDetailInvite('')
-    setSelectedHostHistory(new Set())
-    setRecentVisible(10)
-    setDeletedVisible(10)
+  const removeFilesByIds = (ids: string[]) => {
+    const idSet = new Set(ids.map((id) => String(id || '')).filter(Boolean))
+    if (!idSet.size) return
+    setFiles((prev) => prev.filter((item) => !idSet.has(item.id)))
+    setStarred((prev) => {
+      const next = new Set(prev)
+      for (const id of idSet) next.delete(id)
+      return next
+    })
+    setSelected((prev) => {
+      const next = new Set(prev)
+      for (const id of idSet) next.delete(id)
+      return next
+    })
   }
 
   const toggleStar = (id: string) => {
@@ -977,26 +889,7 @@ export default function App() {
   }
 
   const toggleDelete = (id: string) => {
-    const wasDeleted = deleted.has(id)
-    setDeleted((prev) => {
-      const next = new Set(prev)
-      if (wasDeleted) next.delete(id)
-      else next.add(id)
-      return next
-    })
-    setDeletedAt((prev) => {
-      const next = { ...prev }
-      if (!wasDeleted) next[id] = Date.now()
-      else delete next[id]
-      return next
-    })
-    if (!wasDeleted) {
-      setSelected((prev) => {
-        const next = new Set(prev)
-        next.delete(id)
-        return next
-      })
-    }
+    removeFilesByIds([id])
   }
 
   const toggleSelect = (id: string) => {
@@ -1008,174 +901,11 @@ export default function App() {
     })
   }
 
-  const assignFolderToSelected = () => {
-    const selectedIds = Array.from(selected)
-    if (!selectedIds.length) {
-      Alert.alert('Select files', 'Select one or more files first.')
-      return
-    }
-    setFolderAssignIds(selectedIds)
-    setFolderDraftName('')
-    setFolderModalVisible(true)
-  }
-
-  const applyFolderName = (nameRaw: string, ids = folderAssignIds) => {
-    const name = String(nameRaw || '').trim()
-    if (!name || !ids.length) return
-
-    let folder = folders.find((item) => item.name.toLowerCase() === name.toLowerCase())
-    if (!folder) {
-      folder = {
-        id: `folder:${Date.now()}:${Math.random().toString(16).slice(2, 8)}`,
-        name
-      }
-      setFolders((prev) => [...prev, folder!])
-    }
-
-    const folderId = folder.id
-    const idSet = new Set(ids)
-    setFiles((prev) => prev.map((item) => (idSet.has(item.id) ? { ...item, folderId } : item)))
-    setFolderModalVisible(false)
-    setFolderAssignIds([])
-  }
-
-  const removeSelectedFromFolder = () => {
-    const ids = Array.from(selected)
-    if (!ids.length) return
-    const idSet = new Set(ids)
-    setFiles((prev) =>
-      prev.map((item) => (idSet.has(item.id) ? { ...item, folderId: undefined } : item))
-    )
-  }
-
-  const deleteCurrentFolder = () => {
-    if (!folderFilter) return
-    const folder = folders.find((item) => item.id === folderFilter)
-    if (!folder) return
-    const ids = files.filter((item) => item.folderId === folder.id).map((item) => item.id)
-    Alert.alert('Delete folder?', `Delete "${folder.name}"?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete Folder',
-        style: 'destructive',
-        onPress: () => {
-          Alert.alert(
-            'Delete files too?',
-            'Also move these files to Deleted files? They can be restored later.',
-            [
-              {
-                text: 'Keep files',
-                onPress: () => {
-                  const idSet = new Set(ids)
-                  setFiles((prev) =>
-                    prev.map((item) =>
-                      idSet.has(item.id) ? { ...item, folderId: undefined } : item
-                    )
-                  )
-                  setFolders((prev) => prev.filter((item) => item.id !== folder.id))
-                  setFolderFilter('')
-                }
-              },
-              {
-                text: 'Delete files',
-                style: 'destructive',
-                onPress: () => {
-                  Alert.alert(
-                    'Final confirm',
-                    'Move selected folder files to Deleted and remove this folder?',
-                    [
-                      { text: 'Cancel', style: 'cancel' },
-                      {
-                        text: 'Confirm move',
-                        style: 'destructive',
-                        onPress: () => {
-                          const idSet = new Set(ids)
-                          const now = Date.now()
-                          setFiles((prev) =>
-                            prev.map((item) =>
-                              idSet.has(item.id) ? { ...item, folderId: undefined } : item
-                            )
-                          )
-                          setDeleted((prev) => {
-                            const next = new Set(prev)
-                            for (const id of ids) next.add(id)
-                            return next
-                          })
-                          setDeletedAt((prev) => {
-                            const next = { ...prev }
-                            for (const id of ids) next[id] = now
-                            return next
-                          })
-                          setFolders((prev) => prev.filter((item) => item.id !== folder.id))
-                          setFolderFilter('')
-                        }
-                      }
-                    ]
-                  )
-                }
-              }
-            ]
-          )
-        }
-      }
-    ])
-  }
-
-  const moveSection = (section: HomeSection, direction: -1 | 1) => {
-    setHomeSections((prev) => {
-      const index = prev.indexOf(section)
-      if (index < 0) return prev
-      const nextIndex = index + direction
-      if (nextIndex < 0 || nextIndex >= prev.length) return prev
-
-      const next = prev.slice()
-      const temp = next[index]
-      next[index] = next[nextIndex]
-      next[nextIndex] = temp
-      return next
-    })
-  }
-
-  const toggleSectionVisibility = (section: HomeSection) => {
-    setHiddenSections((prev) => {
-      const next = new Set(prev)
-      if (next.has(section)) next.delete(section)
-      else next.add(section)
-      return next
-    })
-  }
-
-  const renderHomeSectionCard = (section: HomeSection) => {
-    if (hiddenSections.has(section)) return null
-
-    const map = {
-      recent: {
-        title: 'Recent',
-        text: 'Your recently opened files show up here, so you can jump right back in.'
-      },
-      starred: {
-        title: 'Starred',
-        text: 'Anything you star shows up here for quick access.'
-      },
-      host: {
-        title: 'Host',
-        text: 'Your current host sessions show up here with recent activity below.'
-      }
-    }[section]
-
-    return (
-      <View key={section} style={[styles.homeCard, themed.panel]}>
-        <View style={styles.homeCardHead}>
-          <Text style={[styles.homeCardTitle, themed.text]}>{map.title}</Text>
-          <Pressable onPress={() => openSection(section)}>
-            <Text style={[styles.linkText, themed.accentText]}>See all</Text>
-          </Pressable>
-        </View>
-        <Text style={[styles.homeCardText, themed.muted]}>{map.text}</Text>
-        <Text style={[styles.homeCardCount, themed.accentText]}>{sectionCounts[section]} items</Text>
-      </View>
-    )
-  }
+  const themeModeMeta = {
+    system: { icon: '🖥', label: 'System' },
+    dark: { icon: '🌙', label: 'Dark' },
+    light: { icon: '☀', label: 'Light' }
+  } as const
 
   const stopActiveHost = async (invite: string) => {
     try {
@@ -1242,9 +972,8 @@ export default function App() {
             <Pressable style={styles.rowBtn} onPress={() => setHostDetailInvite('')}>
               <Text style={styles.rowBtnText}>← Back</Text>
             </Pressable>
-            <Text style={styles.hostDetailTitle}>{host.sessionLabel || host.invite}</Text>
+            <Text style={styles.hostDetailTitle}>{host.sessionLabel || 'Host session'}</Text>
           </View>
-          <Text style={styles.muted}>Invite: {host.invite}</Text>
           {manifest.map((entry, idx) => (
             <View key={`${entry.drivePath || entry.name || idx}`} style={styles.hostFileRow}>
               <Text style={styles.fileName}>{entry.name || 'file'}</Text>
@@ -1284,22 +1013,23 @@ export default function App() {
           activeHosts.map((host) => (
             <View key={host.invite} style={[styles.hostCard, themed.panel]}>
               <Pressable onPress={() => setHostDetailInvite(host.invite)}>
-                <Text style={[styles.hostCardTitle, themed.text]}>{host.sessionLabel || host.invite}</Text>
+                <Text style={[styles.hostCardTitle, themed.text]}>
+                  {host.sessionLabel || 'Host session'}
+                </Text>
               </Pressable>
               <Text style={[styles.fileSub, themed.muted]}>
                 {host.fileCount || 0} files • {formatBytes(Number(host.totalBytes || 0))}
               </Text>
               <View style={styles.hostCardActions}>
+                <Pressable style={styles.rowBtn} onPress={() => toggleStarHostInvite(host.invite)}>
+                  <Text style={styles.rowBtnText}>
+                    {starredHosts.has(String(host.invite || '')) ? '★' : '☆'}
+                  </Text>
+                </Pressable>
                 <Pressable style={styles.rowBtn} onPress={() => setHostDetailInvite(host.invite)}>
                   <Text style={styles.rowBtnText}>Open</Text>
                 </Pressable>
-                <Pressable
-                  style={styles.rowBtn}
-                  onPress={() => {
-                    setSearch(host.invite)
-                    setLatestInvite(host.invite)
-                  }}
-                >
+                <Pressable style={styles.rowBtn} onPress={() => copyInviteIntoDownload(host.invite)}>
                   <Text style={styles.rowBtnText}>Copy</Text>
                 </Pressable>
                 <Pressable style={styles.rowBtn} onPress={() => stopActiveHost(host.invite)}>
@@ -1308,6 +1038,55 @@ export default function App() {
               </View>
             </View>
           ))
+        )}
+
+        <Text style={[styles.hostSectionTitle, themed.text]}>Starred hosts</Text>
+        {Array.from(starredHosts).length === 0 ? (
+          <Text style={[styles.muted, themed.muted]}>No starred hosts.</Text>
+        ) : (
+          Array.from(starredHosts).map((invite) => {
+            const activeHost = activeHosts.find((host) => String(host.invite || '') === invite)
+            const historyItem = mergedHostHistory.find(
+              (item) => String(item?.invite || '') === invite
+            )
+            const canStop = Boolean(activeHost)
+            const canRehost =
+              !canStop &&
+              Boolean(historyItem && String(historyEntryKey(historyItem)).trim())
+
+            return (
+              <View key={`starred:${invite}`} style={[styles.hostCard, themed.panel]}>
+                <Text style={[styles.hostCardTitle, themed.text]}>
+                  {activeHost?.sessionLabel || historyItem?.sessionLabel || 'Starred host'}
+                </Text>
+                <Text style={[styles.fileSub, themed.muted]}>
+                  {canStop
+                    ? `${activeHost?.fileCount || 0} files • ${formatBytes(Number(activeHost?.totalBytes || 0))}`
+                    : 'Not active'}
+                </Text>
+                <View style={styles.hostCardActions}>
+                  {canStop ? (
+                    <Pressable style={styles.rowBtn} onPress={() => void stopActiveHost(invite)}>
+                      <Text style={[styles.rowBtnText, styles.rowDeleteText]}>Stop</Text>
+                    </Pressable>
+                  ) : canRehost ? (
+                    <Pressable
+                      style={styles.rowBtn}
+                      onPress={() => void restartHostFromHistory(historyItem)}
+                    >
+                      <Text style={styles.rowBtnText}>Re-host</Text>
+                    </Pressable>
+                  ) : null}
+                  <Pressable style={styles.rowBtn} onPress={() => copyInviteIntoDownload(invite)}>
+                    <Text style={styles.rowBtnText}>Copy</Text>
+                  </Pressable>
+                  <Pressable style={styles.rowBtn} onPress={() => toggleStarHostInvite(invite)}>
+                    <Text style={styles.rowBtnText}>Unstar</Text>
+                  </Pressable>
+                </View>
+              </View>
+            )
+          })
         )}
 
         <Text style={[styles.hostSectionTitle, themed.text]}>History</Text>
@@ -1387,13 +1166,7 @@ export default function App() {
                     <Text style={[styles.rowBtnText, styles.rowDeleteText]}>Remove</Text>
                   </Pressable>
                   {item.invite ? (
-                    <Pressable
-                      style={styles.rowBtn}
-                      onPress={() => {
-                        setSearch(item.invite)
-                        setLatestInvite(item.invite)
-                      }}
-                    >
+                    <Pressable style={styles.rowBtn} onPress={() => copyInviteIntoDownload(item.invite)}>
                       <Text style={styles.rowBtnText}>Copy invite</Text>
                     </Pressable>
                   ) : null}
@@ -1444,9 +1217,6 @@ export default function App() {
           <Pressable style={styles.rowBtn} onPress={() => void downloadInviteSelected('add-selected')}>
             <Text style={styles.rowBtnText}>Add Selected</Text>
           </Pressable>
-          <Pressable style={styles.rowBtn} onPress={() => void downloadInviteSelected('add-drive-folder')}>
-            <Text style={styles.rowBtnText}>Add Drive</Text>
-          </Pressable>
         </View>
         {inviteEntries.map((entry, i) => {
           const key = String(entry.drivePath || entry.name)
@@ -1491,8 +1261,6 @@ export default function App() {
       const isSelected = selected.has(item.id)
       const isImage = String(item.mimeType || '').startsWith('image/') && item.dataBase64
       const isVideo = String(item.mimeType || '').startsWith('video/')
-      const folderName = folders.find((folder) => folder.id === item.folderId)?.name || ''
-      const isDeleted = deleted.has(item.id)
       return (
         <View key={item.id} style={[styles.fileRow, themed.panel]}>
           <Pressable onPress={() => toggleSelect(item.id)} style={styles.checkBtn}>
@@ -1521,44 +1289,25 @@ export default function App() {
             <Text style={[styles.fileSub, themed.muted]}>
               {formatBytes(item.byteLength)} • {formatDate(item.updatedAt)} • {item.source}
             </Text>
-            {folderName ? <Text style={[styles.fileSub, themed.muted]}>Folder: {folderName}</Text> : null}
           </View>
           <View style={styles.fileActions}>
             <Pressable onPress={() => toggleStar(item.id)} style={styles.rowBtn}>
               <Text style={styles.rowBtnText}>{isStarred ? '★' : '☆'}</Text>
             </Pressable>
-            {folderName ? (
-              <Pressable
-                onPress={() =>
-                  setFiles((prev) =>
-                    prev.map((entry) =>
-                      entry.id === item.id ? { ...entry, folderId: undefined } : entry
-                    )
-                  )
-                }
-                style={styles.rowBtn}
-              >
-                <Text style={styles.rowBtnText}>↩︎</Text>
-              </Pressable>
-            ) : null}
             <Pressable
               onPress={() => {
                 Alert.alert(
-                  isDeleted ? 'Restore file?' : 'Delete file?',
-                  isDeleted ? 'Restore this file from deleted?' : 'Move this file to deleted?',
+                  'Remove file?',
+                  'This removes the file from app history and clears its saved source path.',
                   [
                     { text: 'Cancel', style: 'cancel' },
-                    { text: 'Confirm', onPress: () => toggleDelete(item.id) }
+                    { text: 'Remove', style: 'destructive', onPress: () => toggleDelete(item.id) }
                   ]
                 )
               }}
               style={styles.rowBtn}
             >
-              {isDeleted ? (
-                <Text style={[styles.rowBtnText, styles.rowDeleteText]}>↺</Text>
-              ) : (
-                <TrashIcon />
-              )}
+              <TrashIcon />
             </Pressable>
           </View>
         </View>
@@ -1566,126 +1315,123 @@ export default function App() {
     })
   }
 
+  const renderWorkerPanel = () => (
+    <View style={[styles.activityPanel, themed.panel]}>
+      <Text style={[styles.status, themed.muted]}>{status}</Text>
+      <Text style={[styles.workerLog, themed.muted]}>{workerLog}</Text>
+      {workerActivityBars.map((bar) => (
+        <View key={bar.id} style={styles.ingestWrap}>
+          <Text style={[styles.ingestLabel, themed.muted]}>
+            {bar.label}{' '}
+            {bar.displayMode === 'bytes'
+              ? `${Math.round((bar.done / Math.max(bar.total, 1)) * 100)}% (${formatBytes(bar.done)} / ${formatBytes(bar.total)})`
+              : `${bar.done}/${Math.max(bar.total, 1)}`}
+          </Text>
+          {bar.subtitle ? (
+            <Text style={[styles.ingestSubLabel, themed.muted]}>{bar.subtitle}</Text>
+          ) : null}
+          <View style={[styles.ingestTrack, themed.panelSoft]}>
+            <View
+              style={[
+                styles.ingestFill,
+                themed.accentBg,
+                { width: `${Math.round((bar.done / Math.max(bar.total, 1)) * 100)}%` }
+              ]}
+            />
+          </View>
+        </View>
+      ))}
+    </View>
+  )
+
   return (
     <View style={[styles.container, themed.container]}>
       <StatusBar style={isDark ? 'light' : 'dark'} />
 
       <View style={[styles.topHeader, themed.container]}>
-        <Text style={[styles.topTitle, themed.text]}>Home</Text>
-        <View style={styles.topIcons}>
-          <Text style={styles.topIcon}>🔔</Text>
-          <Text style={styles.topIcon}>⇪</Text>
-        </View>
+        <Text style={[styles.topTitle, themed.text]}>Pear Drops</Text>
       </View>
 
-      <TextInput
-        value={search}
-        onChangeText={setSearch}
-        placeholder='Search for files or paste invite to view drive'
-        placeholderTextColor={theme.inputPlaceholder}
-        style={[styles.searchInput, themed.searchInput]}
-      />
       <View style={styles.themeModeRow}>
-        {(['system', 'dark', 'light'] as ThemeMode[]).map((mode) => (
-          <Pressable
-            key={mode}
-            style={[
-              styles.themeChip,
-              themed.panelSoft,
-              themeMode === mode && styles.themeChipActive,
-              themeMode === mode && themed.accentBg
-            ]}
-            onPress={() => setThemeMode(mode)}
-          >
-            <Text
-              style={[
-                styles.themeChipText,
-                themed.muted,
-                themeMode === mode && styles.themeChipTextActive
-              ]}
-            >
-              {mode}
-            </Text>
-          </Pressable>
-        ))}
+        <Pressable
+          style={[styles.themeDropdownBtn, themed.panelSoft]}
+          onPress={() => setThemeDropdownOpen(true)}
+        >
+          <Text style={[styles.themeDropdownText, themed.text]}>
+            {themeModeMeta[themeMode].icon} {themeModeMeta[themeMode].label}
+          </Text>
+          <Text style={[styles.themeDropdownChevron, themed.muted]}>▾</Text>
+        </Pressable>
+      </View>
+
+      <View style={styles.mainTabsRow}>
+        <Pressable
+          style={[
+            styles.mainTabBtn,
+            themed.panelSoft,
+            mainTab === 'upload' && styles.mainTabBtnActive,
+            mainTab === 'upload' && themed.accentBg
+          ]}
+          onPress={() => setMainTab('upload')}
+        >
+          <Text style={[styles.mainTabBtnText, mainTab === 'upload' && styles.mainTabBtnTextActive]}>
+            Upload
+          </Text>
+        </Pressable>
+        <Pressable
+          style={[
+            styles.mainTabBtn,
+            themed.panelSoft,
+            mainTab === 'download' && styles.mainTabBtnActive,
+            mainTab === 'download' && themed.accentBg
+          ]}
+          onPress={() => setMainTab('download')}
+        >
+          <Text style={[styles.mainTabBtnText, mainTab === 'download' && styles.mainTabBtnTextActive]}>
+            Download
+          </Text>
+        </Pressable>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        {activeTab === 'home' ? (
+        {mainTab === 'upload' ? (
           <>
-            {homeSections.map((section) => renderHomeSectionCard(section))}
-
-            <View style={[styles.customizeCard, themed.panelSoft, { borderColor: theme.border, borderWidth: 1 }]}>
-              <Text style={[styles.customizeTitle, themed.text]}>Customize your home screen</Text>
-              <Text style={[styles.customizeText, themed.muted]}>
-                Add, remove, or reorder sections to show what matters most.
-              </Text>
-              <Pressable style={[styles.customizeBtn, themed.panel]} onPress={() => setCustomizeOpen((v) => !v)}>
-                <Text style={styles.customizeBtnText}>
-                  {customizeOpen ? 'Done customizing' : 'Customize'}
-                </Text>
-              </Pressable>
-
-              {customizeOpen ? (
-                <View style={styles.customizePanel}>
-                  {homeSections.map((section) => (
-                    <View key={`custom-${section}`} style={[styles.customRow, themed.panel]}>
-                      <Pressable onPress={() => toggleSectionVisibility(section)}>
-                        <Text style={styles.customRowText}>
-                          {hiddenSections.has(section) ? 'Show' : 'Hide'} {section}
-                        </Text>
-                      </Pressable>
-                      <View style={styles.customRowActions}>
-                        <Pressable
-                          onPress={() => moveSection(section, -1)}
-                          style={styles.miniControl}
-                        >
-                          <Text>↑</Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={() => moveSection(section, 1)}
-                          style={styles.miniControl}
-                        >
-                          <Text>↓</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  ))}
-                </View>
-              ) : null}
-            </View>
-          </>
-        ) : null}
-
-        {activeTab === 'files' ? (
-          <>
+            <TextInput
+              value={localSearch}
+              onChangeText={setLocalSearch}
+              placeholder='Search local files'
+              placeholderTextColor={theme.inputPlaceholder}
+              style={[styles.searchInput, themed.searchInput]}
+            />
             <Text style={[styles.filesTitle, themed.text]}>
               {filesFilter === 'all'
                 ? 'All files'
-                : filesFilter === 'recent'
-                  ? 'Recent'
-                  : filesFilter === 'starred'
-                    ? 'Starred'
-                    : filesFilter === 'host'
-                      ? hostDetailInvite
-                        ? 'Host details'
-                        : 'Host'
-                      : 'Deleted'}
+                : filesFilter === 'starred'
+                  ? 'Starred'
+                  : hostDetailInvite
+                    ? 'Host details'
+                    : 'Host'}
             </Text>
 
             <View style={styles.inlineActions}>
               <Pressable style={[styles.primaryBtn, themed.accentBg]} onPress={onUpload}>
                 <Text style={styles.primaryBtnText}>Add Files</Text>
               </Pressable>
-              <Pressable style={[styles.secondaryBtn, themed.panelSoft]} onPress={() => void onSearchAction()}>
-                <Text style={[styles.secondaryBtnText, themed.accentText]}>Search</Text>
+              <Pressable
+                style={[styles.secondaryBtn, themed.panelSoft, hostingBusy && styles.rowBtnDisabled]}
+                onPress={startHostNamePromptForSelected}
+                disabled={hostingBusy || selected.size === 0}
+              >
+                <Text style={[styles.secondaryBtnText, themed.accentText]}>
+                  {hostingBusy ? 'Starting...' : 'Host Selected'}
+                </Text>
               </Pressable>
-              <Pressable style={[styles.secondaryBtn, themed.panelSoft]} onPress={onDownload}>
-                <Text style={[styles.secondaryBtnText, themed.accentText]}>View Drive</Text>
+              <Pressable style={[styles.secondaryBtn, themed.panelSoft]} onPress={onShareInvite}>
+                <Text style={[styles.secondaryBtnText, themed.accentText]}>Share Invite</Text>
               </Pressable>
             </View>
 
-            {selected.size && filesFilter !== 'host' && !inviteMode ? (
+            {selected.size > 0 && filesFilter !== 'host' ? (
               <View style={styles.bulkBar}>
                 <Text style={styles.bulkText}>{selected.size} selected</Text>
                 <Pressable
@@ -1715,24 +1461,14 @@ export default function App() {
                 <Pressable
                   style={styles.rowBtn}
                   onPress={() => {
-                    Alert.alert('Delete selected?', `Move ${selected.size} files to deleted?`, [
+                    Alert.alert('Remove selected?', `Remove ${selected.size} file(s) from app history?`, [
                       { text: 'Cancel', style: 'cancel' },
                       {
-                        text: 'Delete',
+                        text: 'Remove',
+                        style: 'destructive',
                         onPress: () => {
                           const ids = Array.from(selected)
-                          setDeleted((prev) => {
-                            const next = new Set(prev)
-                            for (const id of ids) next.add(id)
-                            return next
-                          })
-                          setDeletedAt((prev) => {
-                            const next = { ...prev }
-                            const now = Date.now()
-                            for (const id of ids) next[id] = now
-                            return next
-                          })
-                          setSelected(new Set())
+                          removeFilesByIds(ids)
                         }
                       }
                     ])
@@ -1740,331 +1476,106 @@ export default function App() {
                 >
                   <TrashIcon />
                 </Pressable>
-                <Pressable style={styles.rowBtn} onPress={assignFolderToSelected}>
-                  <Text style={styles.rowBtnText}>📁</Text>
-                </Pressable>
-                {folderFilter ? (
-                  <Pressable style={styles.rowBtn} onPress={removeSelectedFromFolder}>
-                    <Text style={styles.rowBtnText}>↩︎</Text>
-                  </Pressable>
-                ) : null}
-                {filesFilter === 'deleted' ? (
-                  <Pressable
-                    style={styles.rowBtn}
-                    onPress={() => {
-                      const ids = Array.from(selected)
-                      if (!ids.length) return
-                      Alert.alert(
-                        'Wipe selected?',
-                        `Permanently remove ${ids.length} selected file(s)?`,
-                        [
-                          { text: 'Cancel', style: 'cancel' },
-                          {
-                            text: 'Wipe',
-                            style: 'destructive',
-                            onPress: () => {
-                              const idSet = new Set(ids)
-                              setFiles((prev) => prev.filter((item) => !idSet.has(item.id)))
-                              setDeleted((prev) => {
-                                const next = new Set(prev)
-                                for (const id of ids) next.delete(id)
-                                return next
-                              })
-                              setStarred((prev) => {
-                                const next = new Set(prev)
-                                for (const id of ids) next.delete(id)
-                                return next
-                              })
-                              setDeletedAt((prev) => {
-                                const next = { ...prev }
-                                for (const id of ids) delete next[id]
-                                return next
-                              })
-                              setSelected(new Set())
-                            }
-                          }
-                        ]
-                      )
-                    }}
-                  >
-                    <Text style={[styles.rowBtnText, styles.rowDeleteText]}>✖</Text>
-                  </Pressable>
-                ) : null}
-                {filesFilter === 'deleted' ? (
-                  <Pressable
-                    style={styles.rowBtn}
-                    onPress={() => {
-                      const ids = Array.from(selected)
-                      setDeleted((prev) => {
-                        const next = new Set(prev)
-                        for (const id of ids) next.delete(id)
-                        return next
-                      })
-                      setDeletedAt((prev) => {
-                        const next = { ...prev }
-                        for (const id of ids) delete next[id]
-                        return next
-                      })
-                      setSelected(new Set())
-                    }}
-                  >
-                    <Text style={styles.rowBtnText}>↺</Text>
-                  </Pressable>
-                ) : null}
               </View>
             ) : null}
 
-            <View style={[styles.activityPanel, themed.panel]}>
-              <View style={[styles.inviteRow, themed.panel]}>
-                <Text style={[styles.inviteRowText, themed.text]}>{latestInvite || 'No invite yet'}</Text>
-                <Pressable style={[styles.rowBtn, themed.panelSoft]} onPress={onShareInvite}>
-                  <Text style={styles.rowBtnText}>⧉</Text>
-                </Pressable>
-              </View>
-              <Text style={[styles.status, themed.muted]}>{status}</Text>
-              <Text style={[styles.workerLog, themed.muted]}>{workerLog}</Text>
-              {workerActivityBars.map((bar) => (
-                <View key={bar.id} style={styles.ingestWrap}>
-                  <Text style={[styles.ingestLabel, themed.muted]}>
-                    {bar.label}{' '}
-                    {bar.displayMode === 'bytes'
-                      ? `${Math.round((bar.done / Math.max(bar.total, 1)) * 100)}% (${formatBytes(bar.done)} / ${formatBytes(bar.total)})`
-                      : `${bar.done}/${Math.max(bar.total, 1)}`}
-                  </Text>
-                  {bar.subtitle ? (
-                    <Text style={[styles.ingestSubLabel, themed.muted]}>{bar.subtitle}</Text>
-                  ) : null}
-                  <View style={[styles.ingestTrack, themed.panelSoft]}>
-                    <View
-                      style={[
-                        styles.ingestFill,
-                        themed.accentBg,
-                        { width: `${Math.round((bar.done / Math.max(bar.total, 1)) * 100)}%` }
-                      ]}
-                    />
-                  </View>
-                </View>
-              ))}
-            </View>
+            {renderWorkerPanel()}
 
-            {folderFilter && !inviteMode ? (
-              <View style={styles.folderActionRow}>
-                <Text style={styles.folderActionText}>
-                  Folder: {folders.find((item) => item.id === folderFilter)?.name || ''}
-                </Text>
-                <Pressable style={styles.rowBtn} onPress={deleteCurrentFolder}>
-                  <Text style={[styles.rowBtnText, styles.rowDeleteText]}>Delete folder</Text>
-                </Pressable>
-              </View>
-            ) : null}
-
-            {!inviteMode ? (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
-                {(['all', 'recent', 'starred', 'host', 'deleted'] as FilesFilter[]).map(
-                  (filter) => (
-                  <Pressable
-                    key={filter}
-                    style={[
-                      styles.chip,
-                      themed.panelSoft,
-                      filesFilter === filter && styles.chipActive,
-                      filesFilter === filter && themed.accentBg
-                    ]}
-                      onPress={() => {
-                        setFilesFilter(filter)
-                        setInviteMode(false)
-                        setSelectedHostHistory(new Set())
-                        if (filter !== 'host') setHostDetailInvite('')
-                        if (filter === 'recent') setRecentVisible(10)
-                        if (filter === 'deleted') setDeletedVisible(10)
-                        if (filter === 'host') void refreshHosts()
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.chipText,
-                          themed.muted,
-                          filesFilter === filter && styles.chipTextActive
-                        ]}
-                      >
-                        {filter}
-                      </Text>
-                    </Pressable>
-                  )
-                )}
-              </ScrollView>
-            ) : null}
-
-            {!inviteMode ? (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
+              {(['all', 'starred', 'host'] as FilesFilter[]).map((filter) => (
                 <Pressable
+                  key={filter}
                   style={[
                     styles.chip,
                     themed.panelSoft,
-                    folderFilter === '' && styles.chipActive,
-                    folderFilter === '' && themed.accentBg
+                    filesFilter === filter && styles.chipActive,
+                    filesFilter === filter && themed.accentBg
                   ]}
-                  onPress={() => setFolderFilter('')}
+                  onPress={() => {
+                    setFilesFilter(filter)
+                    setSelectedHostHistory(new Set())
+                    if (filter !== 'host') setHostDetailInvite('')
+                    if (filter === 'host') void refreshHosts()
+                  }}
                 >
                   <Text
                     style={[
                       styles.chipText,
                       themed.muted,
-                      folderFilter === '' && styles.chipTextActive
+                      filesFilter === filter && styles.chipTextActive
                     ]}
                   >
-                    All folders
+                    {filter}
                   </Text>
                 </Pressable>
-                {folders.map((folder) => (
-                  <Pressable
-                    key={folder.id}
-                    style={[
-                      styles.chip,
-                      themed.panelSoft,
-                      folderFilter === folder.id && styles.chipActive,
-                      folderFilter === folder.id && themed.accentBg
-                    ]}
-                    onPress={() => setFolderFilter(folder.id)}
-                  >
-                    <Text
-                      style={[
-                        styles.chipText,
-                        themed.muted,
-                        folderFilter === folder.id && styles.chipTextActive
-                      ]}
-                    >
-                      {folder.name}
-                    </Text>
-                  </Pressable>
-                ))}
-              </ScrollView>
-            ) : null}
+              ))}
+            </ScrollView>
 
             <View style={styles.filesList}>
-              {inviteMode
-                ? renderInviteList()
-                : filesFilter === 'host'
-                  ? renderHostContent()
-                  : renderFileList()}
+              {filesFilter === 'host' ? renderHostContent() : renderFileList()}
             </View>
-
-            {!inviteMode &&
-              ((filesFilter === 'recent' && canLoadMoreRecent) ||
-                (filesFilter === 'deleted' && canLoadMoreDeleted)) && (
+          </>
+        ) : (
+          <>
+            <TextInput
+              value={inviteInput}
+              onChangeText={setInviteInput}
+              placeholder='Paste peardrops://invite...'
+              placeholderTextColor={theme.inputPlaceholder}
+              style={[styles.searchInput, themed.searchInput]}
+            />
+            <View style={styles.inlineActions}>
+              <Pressable style={[styles.primaryBtn, themed.accentBg]} onPress={onDownload}>
+                <Text style={styles.primaryBtnText}>View Drive</Text>
+              </Pressable>
+              {inviteMode ? (
                 <Pressable
                   style={[styles.secondaryBtn, themed.panelSoft]}
-                  onPress={() => {
-                    if (filesFilter === 'recent') setRecentVisible((v) => v + 10)
-                    else setDeletedVisible((v) => v + 10)
-                  }}
+                  onPress={() => void downloadInviteSelected('download')}
                 >
-                  <Text style={[styles.secondaryBtnText, themed.accentText]}>Load more</Text>
+                  <Text style={[styles.secondaryBtnText, themed.accentText]}>Download Selected</Text>
                 </Pressable>
+              ) : null}
+            </View>
+
+            {renderWorkerPanel()}
+
+            <View style={styles.filesList}>
+              {inviteMode ? (
+                renderInviteList()
+              ) : (
+                <Text style={[styles.muted, themed.muted]}>
+                  View a drive invite to select and download files.
+                </Text>
               )}
+            </View>
           </>
-        ) : null}
-
-        {activeTab === 'photos' ? (
-          <View style={[styles.placeholderCard, themed.panel]}>
-            <Text style={[styles.placeholderTitle, themed.text]}>Photos</Text>
-            <Text style={[styles.muted, themed.muted]}>
-              Photo-specific organization is next. Files still remain available in Files.
-            </Text>
-          </View>
-        ) : null}
-
+        )}
       </ScrollView>
 
-      {fabOpen ? (
-        <View style={[styles.fabMenu, themed.panel]}>
-          <Pressable style={[styles.fabItem, themed.panelSoft]} onPress={onUpload}>
-            <Text style={[styles.fabItemText, themed.text]}>Upload files</Text>
-          </Pressable>
-          <Pressable style={[styles.fabItem, themed.panelSoft]} onPress={onDownload}>
-            <Text style={[styles.fabItemText, themed.text]}>View drive invite</Text>
-          </Pressable>
-          <Pressable style={[styles.fabItem, themed.panelSoft]} onPress={onShareInvite}>
-            <Text style={[styles.fabItemText, themed.text]}>Share latest invite</Text>
-          </Pressable>
-        </View>
-      ) : null}
-
-      <Pressable style={[styles.fab, themed.accentBg]} onPress={() => setFabOpen((v) => !v)}>
-        <Text style={styles.fabText}>+</Text>
-      </Pressable>
-
-      <View style={[styles.bottomBar, themed.panel]}>
-        {[
-          { key: 'home', label: 'Home' },
-          { key: 'files', label: 'Files' },
-          { key: 'photos', label: 'Photos' }
-        ].map((item) => {
-          const active = activeTab === item.key
-          return (
-            <Pressable
-              key={item.key}
-              style={styles.bottomItem}
-              onPress={() => setActiveTab(item.key as Tab)}
-            >
-              <Text
-                style={[
-                  styles.bottomText,
-                  themed.muted,
-                  active && styles.bottomTextActive,
-                  active && themed.text
-                ]}
-              >
-                {item.label}
-              </Text>
-            </Pressable>
-          )
-        })}
-      </View>
-
       <Modal
-        visible={folderModalVisible}
+        visible={themeDropdownOpen}
         transparent
         animationType='fade'
-        onRequestClose={() => setFolderModalVisible(false)}
+        onRequestClose={() => setThemeDropdownOpen(false)}
       >
         <View style={styles.folderModalRoot}>
-          <Pressable
-            style={styles.folderModalBackdrop}
-            onPress={() => setFolderModalVisible(false)}
-          />
-          <View style={[styles.folderModalCard, themed.panel]}>
-            <Text style={[styles.folderModalTitle, themed.text]}>Put In Folder</Text>
-            <Text style={[styles.muted, themed.muted]}>Select an existing folder or create a new one.</Text>
-            <ScrollView style={styles.folderOptionsScroll}>
-              {folders.length ? (
-                folders.map((folder) => (
-                  <Pressable
-                    key={folder.id}
-                    style={[styles.folderOptionBtn, themed.panelSoft]}
-                    onPress={() => applyFolderName(folder.name)}
-                  >
-                    <Text style={[styles.folderOptionText, themed.text]}>{folder.name}</Text>
-                  </Pressable>
-                ))
-              ) : (
-                <Text style={[styles.muted, themed.muted]}>No folders yet.</Text>
-              )}
-            </ScrollView>
-            <TextInput
-              value={folderDraftName}
-              onChangeText={setFolderDraftName}
-              placeholder='New folder name'
-              style={[styles.folderInput, themed.panelSoft]}
-            />
-            <View style={styles.folderModalActions}>
-              <Pressable style={[styles.rowBtn, themed.panelSoft]} onPress={() => setFolderModalVisible(false)}>
-                <Text style={styles.rowBtnText}>Cancel</Text>
+          <Pressable style={styles.folderModalBackdrop} onPress={() => setThemeDropdownOpen(false)} />
+          <View style={[styles.themeDropdownCard, themed.panel]}>
+            {(['system', 'dark', 'light'] as ThemeMode[]).map((mode) => (
+              <Pressable
+                key={mode}
+                style={[styles.themeDropdownOption, themed.panelSoft]}
+                onPress={() => {
+                  setThemeMode(mode)
+                  setThemeDropdownOpen(false)
+                }}
+              >
+                <Text style={[styles.themeDropdownOptionText, themed.text]}>
+                  {themeModeMeta[mode].icon} {themeModeMeta[mode].label}
+                </Text>
               </Pressable>
-              <Pressable style={[styles.primaryBtn, themed.accentBg]} onPress={() => applyFolderName(folderDraftName)}>
-                <Text style={styles.primaryBtnText}>Create + Move</Text>
-              </Pressable>
-            </View>
+            ))}
           </View>
         </View>
       </Modal>
@@ -2213,9 +1724,7 @@ async function loadPersistedMetadata(): Promise<PersistedMetadata | null> {
     return {
       files: Array.isArray(parsed.files) ? parsed.files : [],
       starred: Array.isArray(parsed.starred) ? parsed.starred : [],
-      deleted: Array.isArray(parsed.deleted) ? parsed.deleted : [],
-      deletedAt: parsed.deletedAt && typeof parsed.deletedAt === 'object' ? parsed.deletedAt : {},
-      folders: Array.isArray(parsed.folders) ? parsed.folders : [],
+      starredHosts: Array.isArray(parsed.starredHosts) ? parsed.starredHosts : [],
       hostHistory: Array.isArray(parsed.hostHistory) ? parsed.hostHistory : [],
       hostHistoryRemoved: Array.isArray(parsed.hostHistoryRemoved) ? parsed.hostHistoryRemoved : [],
       themeMode:
@@ -2292,8 +1801,7 @@ function historyEntryKey(entry: any): string {
 async function toUploadPayload(
   item: FileRecord,
   rpc: { request: (command: number, payload?: any) => Promise<any> },
-  setFiles: (updater: (prev: FileRecord[]) => FileRecord[]) => void,
-  deleted: Set<string>
+  setFiles: (updater: (prev: FileRecord[]) => FileRecord[]) => void
 ) {
   const mimeType = item.mimeType || guessMime(item.name)
 
@@ -2326,7 +1834,7 @@ async function toUploadPayload(
     } catch {}
   }
 
-  if (!item.invite || deleted.has(item.id)) return null
+  if (!item.invite) return null
 
   try {
     const manifest = await rpc.request(RpcCommand.GET_MANIFEST, { invite: item.invite })
@@ -2404,6 +1912,14 @@ async function requestInitWithRetry(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function redactInviteText(value: string): string {
+  const text = String(value || '')
+  return text
+    .replace(/peardrops:\/\/invite[^\s)]+/gi, '[invite hidden]')
+    .replace(/peardrops-web:\/\/join[^\s)]+/gi, '[invite hidden]')
+    .replace(/([?&]invite=)[^&\s)]+/gi, '$1[invite hidden]')
 }
 
 async function resolveAndroidDownloadsDirUri(): Promise<string> {
@@ -2524,13 +2040,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#121212'
   },
-  topIcons: {
-    flexDirection: 'row',
-    gap: 12
-  },
-  topIcon: {
-    fontSize: 20
-  },
   searchInput: {
     marginHorizontal: 16,
     backgroundColor: '#ececec',
@@ -2548,118 +2057,74 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8
   },
-  themeChip: {
-    backgroundColor: '#e9e9e9',
-    borderRadius: 999,
+  mainTabsRow: {
+    marginTop: 10,
+    marginHorizontal: 16,
+    flexDirection: 'row',
+    gap: 8
+  },
+  mainTabBtn: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: '#d8dce3',
-    paddingVertical: 6,
-    paddingHorizontal: 12
+    alignItems: 'center',
+    justifyContent: 'center'
   },
-  themeChipActive: {
-    backgroundColor: '#0f68f5',
+  mainTabBtnActive: {
     borderColor: '#0f68f5'
   },
-  themeChipText: {
-    color: '#5e5e5e',
-    fontWeight: '600',
-    textTransform: 'capitalize'
+  mainTabBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#4c5567'
   },
-  themeChipTextActive: {
+  mainTabBtnTextActive: {
     color: '#fff'
   },
-  scrollContent: {
-    paddingBottom: 120,
-    gap: 10
-  },
-  homeCard: {
-    backgroundColor: '#fff',
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    borderTopWidth: 1,
-    borderTopColor: '#e7e7e7',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e7e7e7'
-  },
-  homeCardHead: {
+  themeDropdownBtn: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#d8dce3',
+    paddingHorizontal: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between'
   },
-  homeCardTitle: {
-    fontSize: 29,
-    fontWeight: '700',
-    color: '#222'
-  },
-  homeCardText: {
-    marginTop: 8,
-    color: '#727272',
-    fontSize: 19,
-    lineHeight: 24,
-    maxWidth: '74%'
-  },
-  homeCardCount: {
-    marginTop: 8,
-    color: '#3d7df6',
-    fontWeight: '600'
-  },
-  linkText: {
-    color: '#3d7df6',
-    fontSize: 18,
-    fontWeight: '600'
-  },
-  customizeCard: {
-    backgroundColor: '#efefef',
-    marginTop: 8,
-    marginHorizontal: 0,
-    padding: 16,
-    gap: 10
-  },
-  customizeTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#333'
-  },
-  customizeText: {
-    color: '#707070',
-    fontSize: 17
-  },
-  customizeBtn: {
-    backgroundColor: '#e4e4e4',
-    borderRadius: 12,
-    paddingVertical: 10,
-    alignItems: 'center'
-  },
-  customizeBtnText: {
+  themeDropdownText: {
+    color: '#2a3548',
     fontWeight: '600',
-    color: '#3c3c3c'
+    fontSize: 14
   },
-  customizePanel: {
+  themeDropdownChevron: {
+    fontSize: 14
+  },
+  themeDropdownCard: {
+    width: '78%',
+    maxWidth: 340,
+    borderWidth: 1,
+    borderColor: '#d8dce3',
+    borderRadius: 12,
+    padding: 8,
     gap: 8
   },
-  customRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#ffffff',
+  themeDropdownOption: {
+    borderWidth: 1,
+    borderColor: '#d8dce3',
     borderRadius: 10,
-    padding: 10
+    paddingVertical: 10,
+    paddingHorizontal: 12
   },
-  customRowText: {
-    textTransform: 'capitalize',
-    fontWeight: '500'
+  themeDropdownOptionText: {
+    fontSize: 15,
+    fontWeight: '600'
   },
-  customRowActions: {
-    flexDirection: 'row',
-    gap: 6
-  },
-  miniControl: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#ececec'
+  scrollContent: {
+    paddingBottom: 120,
+    gap: 10
   },
   filesTitle: {
     fontSize: 32,
@@ -3015,31 +2480,6 @@ const styles = StyleSheet.create({
   fabItemText: {
     color: '#222',
     fontWeight: '600'
-  },
-  bottomBar: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    height: 70,
-    borderTopWidth: 1,
-    borderTopColor: '#dedede',
-    backgroundColor: '#fff',
-    flexDirection: 'row'
-  },
-  bottomItem: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  bottomText: {
-    color: '#7b7b7b',
-    fontSize: 15,
-    fontWeight: '500'
-  },
-  bottomTextActive: {
-    color: '#111',
-    fontWeight: '700'
   },
   folderModalRoot: {
     flex: 1,
