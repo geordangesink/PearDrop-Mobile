@@ -5,7 +5,7 @@ const fs = require('fs/promises')
 const path = require('path')
 const b4a = require('b4a')
 const createTestnet = require('hyperdht/testnet')
-const { TransferBackend } = require('@peardrops/native-shared')
+const { TransferBackend } = require('pear-drop-core')
 
 test('mobile backend upload and download flow saves expected file bytes', async (t) => {
   const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'peardrops-mobile-test-'))

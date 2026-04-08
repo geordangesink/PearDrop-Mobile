@@ -3,7 +3,7 @@ const path = require('bare-path')
 const os = require('bare-os')
 const dir = require('bare-storage')
 const b4a = require('b4a')
-const { bootstrapTransferWorker } = require('@peardrops/native-shared')
+const { bootstrapTransferWorker } = require('pear-drop-core')
 
 async function main() {
   const updaterConfig = JSON.parse(Bare.argv[2] || '{}')
