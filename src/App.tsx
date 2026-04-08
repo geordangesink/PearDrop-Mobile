@@ -183,8 +183,7 @@ export default function App() {
   const [workerActivityBars, setWorkerActivityBars] = useState<WorkerActivityBar[]>([])
   const [themeMode, setThemeMode] = useState<ThemeMode>('system')
   const [themeDropdownOpen, setThemeDropdownOpen] = useState(false)
-  const isDark =
-    themeMode === 'system' ? systemScheme !== 'light' : themeMode === 'dark'
+  const isDark = themeMode === 'system' ? systemScheme !== 'light' : themeMode === 'dark'
   const theme = useMemo(() => getTheme(isDark), [isDark])
   const themed = useMemo(
     () => ({
@@ -302,8 +301,14 @@ export default function App() {
       setStarred(new Set(stored.starred || []))
       setStarredHosts(new Set(Array.isArray(stored.starredHosts) ? stored.starredHosts : []))
       setHostHistory(Array.isArray(stored.hostHistory) ? stored.hostHistory : [])
-      setHostHistoryRemoved(new Set(Array.isArray(stored.hostHistoryRemoved) ? stored.hostHistoryRemoved : []))
-      if (stored.themeMode === 'dark' || stored.themeMode === 'light' || stored.themeMode === 'system') {
+      setHostHistoryRemoved(
+        new Set(Array.isArray(stored.hostHistoryRemoved) ? stored.hostHistoryRemoved : [])
+      )
+      if (
+        stored.themeMode === 'dark' ||
+        stored.themeMode === 'light' ||
+        stored.themeMode === 'system'
+      ) {
         setThemeMode(stored.themeMode)
       }
       setMetadataLoaded(true)
@@ -321,15 +326,7 @@ export default function App() {
       themeMode
     }
     void savePersistedMetadata(payload)
-  }, [
-    files,
-    starred,
-    starredHosts,
-    hostHistory,
-    hostHistoryRemoved,
-    themeMode,
-    metadataLoaded
-  ])
+  }, [files, starred, starredHosts, hostHistory, hostHistoryRemoved, themeMode, metadataLoaded])
 
   useEffect(() => {
     const applyInvite = (url: string | null) => {
@@ -1031,7 +1028,10 @@ export default function App() {
                 <Pressable style={styles.rowBtn} onPress={() => setHostDetailInvite(host.invite)}>
                   <Text style={styles.rowBtnText}>Open</Text>
                 </Pressable>
-                <Pressable style={styles.rowBtn} onPress={() => copyInviteIntoDownload(host.invite)}>
+                <Pressable
+                  style={styles.rowBtn}
+                  onPress={() => copyInviteIntoDownload(host.invite)}
+                >
                   <Text style={styles.rowBtnText}>Copy</Text>
                 </Pressable>
                 <Pressable style={styles.rowBtn} onPress={() => stopActiveHost(host.invite)}>
@@ -1053,8 +1053,7 @@ export default function App() {
             )
             const canStop = Boolean(activeHost)
             const canRehost =
-              !canStop &&
-              Boolean(historyItem && String(historyEntryKey(historyItem)).trim())
+              !canStop && Boolean(historyItem && String(historyEntryKey(historyItem)).trim())
 
             return (
               <View key={`starred:${invite}`} style={[styles.hostCard, themed.panel]}>
@@ -1095,7 +1094,10 @@ export default function App() {
         {selectedHostHistory.size > 0 ? (
           <View style={[styles.bulkBar, themed.panel]}>
             <Text style={[styles.bulkText, themed.muted]}>{selectedHostHistory.size} selected</Text>
-            <Pressable style={styles.rowBtn} onPress={() => void startSelectedHistoryHosts(hostHistoryRows)}>
+            <Pressable
+              style={styles.rowBtn}
+              onPress={() => void startSelectedHistoryHosts(hostHistoryRows)}
+            >
               <Text style={styles.rowBtnText}>Start Hosting</Text>
             </Pressable>
             <Pressable
@@ -1135,11 +1137,16 @@ export default function App() {
                   .join(', ')
               : 'No manifest preview'
             return (
-              <View key={historyKey || String(item.id || item.transferId || Math.random())} style={[styles.hostCard, themed.panel]}>
+              <View
+                key={historyKey || String(item.id || item.transferId || Math.random())}
+                style={[styles.hostCard, themed.panel]}
+              >
                 <Text style={[styles.hostCardTitle, themed.text]}>
                   {item.sessionLabel || item.sessionName || item.invite || 'Upload history'}
                 </Text>
-                <Text style={[styles.fileSub, themed.muted]}>{preview || 'No manifest preview'}</Text>
+                <Text style={[styles.fileSub, themed.muted]}>
+                  {preview || 'No manifest preview'}
+                </Text>
                 <View style={styles.hostCardActions}>
                   <Pressable style={styles.rowBtn} onPress={() => toggleSelectHostHistory(item)}>
                     <Text style={styles.rowBtnText}>
@@ -1168,7 +1175,10 @@ export default function App() {
                     <Text style={[styles.rowBtnText, styles.rowDeleteText]}>Remove</Text>
                   </Pressable>
                   {item.invite ? (
-                    <Pressable style={styles.rowBtn} onPress={() => copyInviteIntoDownload(item.invite)}>
+                    <Pressable
+                      style={styles.rowBtn}
+                      onPress={() => copyInviteIntoDownload(item.invite)}
+                    >
                       <Text style={styles.rowBtnText}>Copy invite</Text>
                     </Pressable>
                   ) : null}
@@ -1216,7 +1226,10 @@ export default function App() {
           <Pressable style={styles.rowBtn} onPress={() => void downloadInviteSelected('download')}>
             <Text style={styles.rowBtnText}>Download</Text>
           </Pressable>
-          <Pressable style={styles.rowBtn} onPress={() => void downloadInviteSelected('add-selected')}>
+          <Pressable
+            style={styles.rowBtn}
+            onPress={() => void downloadInviteSelected('add-selected')}
+          >
             <Text style={styles.rowBtnText}>Add Selected</Text>
           </Pressable>
         </View>
@@ -1235,7 +1248,9 @@ export default function App() {
               </View>
               <View style={styles.fileMeta}>
                 <Text style={[styles.fileName, themed.text]}>{entry.name || `File ${i + 1}`}</Text>
-                <Text style={[styles.fileSub, themed.muted]}>{formatBytes(Number(entry.byteLength || 0))}</Text>
+                <Text style={[styles.fileSub, themed.muted]}>
+                  {formatBytes(Number(entry.byteLength || 0))}
+                </Text>
               </View>
               <Pressable
                 style={styles.rowBtn}
@@ -1363,7 +1378,9 @@ export default function App() {
             <View style={[styles.themeIconBadge, themed.iconBadge]}>
               <Text style={[styles.themeGlyph, themed.muted]}>{themeModeMeta[themeMode].icon}</Text>
             </View>
-            <Text style={[styles.themeDropdownText, themed.text]}>{themeModeMeta[themeMode].label}</Text>
+            <Text style={[styles.themeDropdownText, themed.text]}>
+              {themeModeMeta[themeMode].label}
+            </Text>
           </View>
           <Text style={[styles.themeDropdownChevron, themed.muted]}>▾</Text>
         </Pressable>
@@ -1379,7 +1396,9 @@ export default function App() {
           ]}
           onPress={() => setMainTab('upload')}
         >
-          <Text style={[styles.mainTabBtnText, mainTab === 'upload' && styles.mainTabBtnTextActive]}>
+          <Text
+            style={[styles.mainTabBtnText, mainTab === 'upload' && styles.mainTabBtnTextActive]}
+          >
             Upload
           </Text>
         </Pressable>
@@ -1392,7 +1411,9 @@ export default function App() {
           ]}
           onPress={() => setMainTab('download')}
         >
-          <Text style={[styles.mainTabBtnText, mainTab === 'download' && styles.mainTabBtnTextActive]}>
+          <Text
+            style={[styles.mainTabBtnText, mainTab === 'download' && styles.mainTabBtnTextActive]}
+          >
             Download
           </Text>
         </Pressable>
@@ -1423,7 +1444,11 @@ export default function App() {
                 <Text style={styles.primaryBtnText}>Add Files</Text>
               </Pressable>
               <Pressable
-                style={[styles.secondaryBtn, themed.panelSoft, hostingBusy && styles.rowBtnDisabled]}
+                style={[
+                  styles.secondaryBtn,
+                  themed.panelSoft,
+                  hostingBusy && styles.rowBtnDisabled
+                ]}
                 onPress={startHostNamePromptForSelected}
                 disabled={hostingBusy || selected.size === 0}
               >
@@ -1466,17 +1491,21 @@ export default function App() {
                 <Pressable
                   style={styles.rowBtn}
                   onPress={() => {
-                    Alert.alert('Remove selected?', `Remove ${selected.size} file(s) from app history?`, [
-                      { text: 'Cancel', style: 'cancel' },
-                      {
-                        text: 'Remove',
-                        style: 'destructive',
-                        onPress: () => {
-                          const ids = Array.from(selected)
-                          removeFilesByIds(ids)
+                    Alert.alert(
+                      'Remove selected?',
+                      `Remove ${selected.size} file(s) from app history?`,
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        {
+                          text: 'Remove',
+                          style: 'destructive',
+                          onPress: () => {
+                            const ids = Array.from(selected)
+                            removeFilesByIds(ids)
+                          }
                         }
-                      }
-                    ])
+                      ]
+                    )
                   }}
                 >
                   <TrashIcon />
@@ -1565,7 +1594,10 @@ export default function App() {
         onRequestClose={() => setThemeDropdownOpen(false)}
       >
         <View style={styles.themeModalRoot}>
-          <Pressable style={styles.folderModalBackdrop} onPress={() => setThemeDropdownOpen(false)} />
+          <Pressable
+            style={styles.folderModalBackdrop}
+            onPress={() => setThemeDropdownOpen(false)}
+          />
           <View style={[styles.themeDropdownCard, themed.panel]}>
             {(['system', 'dark', 'light'] as ThemeMode[]).map((mode) => (
               <Pressable
@@ -1583,13 +1615,17 @@ export default function App() {
                 <View style={styles.themeOptionRow}>
                   <View style={styles.themeLabelRow}>
                     <View style={[styles.themeIconBadge, themed.iconBadge]}>
-                      <Text style={[styles.themeGlyph, themed.muted]}>{themeModeMeta[mode].icon}</Text>
+                      <Text style={[styles.themeGlyph, themed.muted]}>
+                        {themeModeMeta[mode].icon}
+                      </Text>
                     </View>
                     <Text style={[styles.themeDropdownOptionText, themed.text]}>
                       {themeModeMeta[mode].label}
                     </Text>
                   </View>
-                  {mode === themeMode ? <Text style={[styles.themeOptionCheck, themed.text]}>✓</Text> : null}
+                  {mode === themeMode ? (
+                    <Text style={[styles.themeOptionCheck, themed.text]}>✓</Text>
+                  ) : null}
                 </View>
               </Pressable>
             ))}
@@ -1607,7 +1643,9 @@ export default function App() {
           <Pressable style={styles.folderModalBackdrop} onPress={dismissHostNameModal} />
           <View style={[styles.folderModalCard, themed.panel]}>
             <Text style={[styles.folderModalTitle, themed.text]}>Host session name</Text>
-            <Text style={[styles.muted, themed.muted]}>Final session label: name + date + 4-char random hex.</Text>
+            <Text style={[styles.muted, themed.muted]}>
+              Final session label: name + date + 4-char random hex.
+            </Text>
             <TextInput
               value={hostNameDraft}
               onChangeText={setHostNameDraft}
@@ -1618,7 +1656,10 @@ export default function App() {
               <Pressable style={[styles.rowBtn, themed.panelSoft]} onPress={dismissHostNameModal}>
                 <Text style={styles.rowBtnText}>Cancel</Text>
               </Pressable>
-              <Pressable style={[styles.primaryBtn, themed.accentBg]} onPress={() => void submitHostNameModal()}>
+              <Pressable
+                style={[styles.primaryBtn, themed.accentBg]}
+                onPress={() => void submitHostNameModal()}
+              >
                 <Text style={styles.primaryBtnText}>Start</Text>
               </Pressable>
             </View>
@@ -1762,7 +1803,10 @@ function rememberHostHistory(existing: any[], transfer: any, fallback: any = {})
 
 function mergeHostHistory(primary: any[], secondary: any[]) {
   const map = new Map<string, any>()
-  const combined = [...(Array.isArray(primary) ? primary : []), ...(Array.isArray(secondary) ? secondary : [])]
+  const combined = [
+    ...(Array.isArray(primary) ? primary : []),
+    ...(Array.isArray(secondary) ? secondary : [])
+  ]
   for (const entry of combined) {
     const normalized = normalizeHostHistoryRecord(entry)
     if (!normalized) continue
@@ -1797,11 +1841,7 @@ function normalizeHostHistoryRecord(entry: any, fallback: any = {}) {
     invite,
     sessionName: String(entry.sessionName || fallback.sessionName || 'Host Session'),
     sessionLabel: String(
-      entry.sessionLabel ||
-        fallback.sessionLabel ||
-        entry.sessionName ||
-        fallback.sessionName ||
-        ''
+      entry.sessionLabel || fallback.sessionLabel || entry.sessionName || fallback.sessionName || ''
     ),
     createdAt: Number(entry.createdAt || fallback.createdAt || Date.now()),
     totalBytes: Number(entry.totalBytes || fallback.totalBytes || 0),
@@ -1872,7 +1912,9 @@ async function toUploadPayload(
 
     setFiles((prev) =>
       prev.map((entry) =>
-        entry.id === item.id ? { ...entry, dataBase64, drivePath: match.drivePath, mimeType: resolvedMime } : entry
+        entry.id === item.id
+          ? { ...entry, dataBase64, drivePath: match.drivePath, mimeType: resolvedMime }
+          : entry
       )
     )
     return {

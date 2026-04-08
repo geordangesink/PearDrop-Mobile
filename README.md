@@ -20,7 +20,6 @@ npm run ios
 
 Use `npm run android` for Android.
 
-
 ## Test
 
 ```bash
