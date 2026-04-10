@@ -11,11 +11,16 @@
       [
         "expo-build-properties",
         {
+          "buildReactNativeFromSource": true,
+          "ios": {
+            "buildReactNativeFromSource": true
+          },
           "android": {
             "minSdkVersion": 29
           }
         }
-      ]
+      ],
+      "./plugins/with-ios-space-safe-bundle-script.cjs"
     ],
     "splash": {
       "image": "./assets/splash-icon.png",

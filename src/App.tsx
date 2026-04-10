@@ -25,6 +25,7 @@ import {
 import { StatusBar } from 'expo-status-bar'
 import * as DocumentPicker from 'expo-document-picker'
 import * as FileSystem from 'expo-file-system/legacy'
+import * as MediaLibrary from 'expo-media-library'
 import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'
 import RPC from 'bare-rpc'
@@ -101,6 +102,7 @@ type WorkerActivityBar = {
   total: number
   subtitle?: string
   displayMode?: 'count' | 'bytes'
+  active?: boolean
 }
 
 const METADATA_PATH = `${FileSystem.documentDirectory || ''}peardrops-mobile-metadata.json`
@@ -294,7 +296,7 @@ export default function App() {
     label: string,
     done: number,
     total: number,
-    options: { subtitle?: string; displayMode?: 'count' | 'bytes' } = {}
+    options: { subtitle?: string; displayMode?: 'count' | 'bytes'; active?: boolean } = {}
   ) => {
     const key = String(id || '').trim()
     if (!key) return
@@ -308,7 +310,8 @@ export default function App() {
         done: safeDone,
         total: safeTotal,
         subtitle: String(options.subtitle || ''),
-        displayMode: options.displayMode || 'count'
+        displayMode: options.displayMode || 'count',
+        active: !!options.active
       })
       return next
     })
@@ -380,7 +383,11 @@ export default function App() {
         setMetadataLoaded(true)
         return
       }
-      setFiles(stored.files || [])
+      setFiles(
+        (stored.files || []).filter(
+          (item) => String(item?.source || '').toLowerCase() !== 'download'
+        )
+      )
       setStarred(new Set(stored.starred || []))
       setStarredHosts(new Set(Array.isArray(stored.starredHosts) ? stored.starredHosts : []))
       setHostHistory(Array.isArray(stored.hostHistory) ? stored.hostHistory : [])
@@ -829,7 +836,7 @@ export default function App() {
     setInviteSelected(new Set(inviteEntries.map((entry) => String(entry.drivePath || entry.name))))
   }
 
-  const downloadInviteSelected = async (mode: 'download' | 'add-selected') => {
+  const downloadInviteSelected = async () => {
     if (inviteDownloadBusy) return
     const selectedEntries = inviteEntries.filter((entry) =>
       inviteSelected.has(String(entry.drivePath || entry.name))
@@ -839,16 +846,18 @@ export default function App() {
       Alert.alert('Select files', 'Select one or more drive files first.')
       return
     }
-    const shouldDownload = mode === 'download'
-    const shouldAddToApp = mode === 'add-selected'
-    setStatus(
-      shouldDownload
-        ? `Downloading ${picked.length} file(s)...`
-        : `Adding ${picked.length} selected file(s) to app...`
-    )
-    setWorkerLogMessage(
-      shouldDownload ? 'downloading selected invite files' : 'adding selected drive files to app'
-    )
+    const shouldDownload = true
+    let iosDestination: 'files' | 'photos' = 'files'
+    if (Platform.OS === 'ios') {
+      const allMedia = picked.every((entry) =>
+        isMediaMimeType(entry.mimeType || guessMime(entry.name))
+      )
+      const destination = await promptIosDownloadDestination(allMedia)
+      if (!destination) return
+      iosDestination = destination
+    }
+    setStatus(`Downloading ${picked.length} file(s)...`)
+    setWorkerLogMessage('downloading selected invite files')
     const knownTotalBytes = picked.reduce(
       (sum, entry) => sum + Math.max(0, Number(entry?.byteLength || 0)),
       0
@@ -863,6 +872,7 @@ export default function App() {
     const defaultDir = `${FileSystem.documentDirectory || ''}downloads`
     let androidDownloadsDirUri = ''
     let androidDownloadMode: 'direct' | 'saf' = 'direct'
+    const iosDownloadedArtifacts: Array<{ path: string; name: string; mimeType: string }> = []
     if (shouldDownload) {
       if (Platform.OS === 'android') {
         const canDirectWrite = await canWriteAndroidPublicDownloads()
@@ -884,8 +894,6 @@ export default function App() {
 
     try {
       setInviteDownloadBusy(true)
-      const now = Date.now()
-      const imported: FileRecord[] = []
       for (let i = 0; i < picked.length; i++) {
         const entry = picked[i]
         upsertWorkerActivityBar(
@@ -1001,16 +1009,12 @@ export default function App() {
           downloadedBytes += fileDone
         }
 
-        if (shouldAddToApp) {
-          imported.push({
-            id: `download:${now}:${i}:${safeName}`,
+        if (shouldDownload && Platform.OS === 'ios' && localDownloadPath) {
+          iosDownloadedArtifacts.push({
+            path: localDownloadPath,
             name: safeName,
-            byteLength: fileDone,
-            updatedAt: Date.now(),
-            source: 'download',
-            invite: inviteSource,
-            mimeType: entry.mimeType || 'application/octet-stream',
-            dataBase64: ''
+            mimeType: entry.mimeType || guessMime(safeName),
+            byteLength: fileDone
           })
         }
         upsertWorkerActivityBar(
@@ -1025,16 +1029,52 @@ export default function App() {
         )
       }
 
-      if (imported.length) setFiles((prev) => [...imported, ...prev])
       await refresh()
-      setStatus(
-        shouldDownload
-          ? Platform.OS === 'android'
+      if (Platform.OS === 'ios' && shouldDownload) {
+        if (iosDestination === 'photos') {
+          const savedCount = await saveArtifactsToIosPhotos(iosDownloadedArtifacts)
+          setStatus(
+            savedCount > 0
+              ? `Saved ${savedCount} file(s) to Photos`
+              : 'No compatible media files to save to Photos.'
+          )
+        } else if (iosDestination === 'files') {
+          try {
+            upsertWorkerActivityBar(
+              'ios-export',
+              'Preparing zip for Files app...',
+              0,
+              Math.max(1, iosDownloadedArtifacts.length + 1),
+              {
+                subtitle: 'Preparing files...',
+                displayMode: 'count',
+                active: true
+              }
+            )
+            await shareArtifactsToIosFiles(iosDownloadedArtifacts, (done, total, subtitle) => {
+              upsertWorkerActivityBar('ios-export', 'Preparing zip for Files app...', done, total, {
+                subtitle,
+                displayMode: 'count',
+                active: done < total
+              })
+            })
+          } finally {
+            clearWorkerActivityBar('ios-export')
+          }
+          setStatus(
+            iosDownloadedArtifacts.length > 1
+              ? `Prepared ${iosDownloadedArtifacts.length} files for Files app`
+              : 'Prepared file for Files app'
+          )
+        }
+      } else {
+        setStatus(
+          Platform.OS === 'android'
             ? `Downloaded ${picked.length} file(s) to Downloads`
             : `Downloaded ${picked.length} file(s)`
-          : `Added ${picked.length} selected file(s) to app`
-      )
-      setWorkerLogMessage(shouldDownload ? 'download completed' : 'drive files added to app')
+        )
+      }
+      setWorkerLogMessage('download completed')
     } finally {
       setInviteDownloadBusy(false)
       clearWorkerActivityBar('download')
@@ -1632,24 +1672,13 @@ export default function App() {
           </Text>
           <AppPressable
             style={[styles.rowBtn, inviteDownloadBusy && styles.rowBtnDisabled]}
-            onPress={() => void downloadInviteSelected('download')}
+            onPress={() => void downloadInviteSelected()}
             disabled={inviteDownloadBusy}
           >
             {inviteDownloadBusy ? (
               <ActivityIndicator size='small' color={theme.accent} />
             ) : (
               <Text style={styles.rowBtnText}>Download</Text>
-            )}
-          </AppPressable>
-          <AppPressable
-            style={[styles.rowBtn, inviteDownloadBusy && styles.rowBtnDisabled]}
-            onPress={() => void downloadInviteSelected('add-selected')}
-            disabled={inviteDownloadBusy}
-          >
-            {inviteDownloadBusy ? (
-              <ActivityIndicator size='small' color={theme.accent} />
-            ) : (
-              <Text style={styles.rowBtnText}>Add Selected</Text>
             )}
           </AppPressable>
         </View>
@@ -1676,7 +1705,7 @@ export default function App() {
                 style={[styles.rowBtn, inviteDownloadBusy && styles.rowBtnDisabled]}
                 onPress={async () => {
                   setInviteSelected(new Set([key]))
-                  await downloadInviteSelected('download')
+                  await downloadInviteSelected()
                 }}
                 disabled={inviteDownloadBusy}
               >
@@ -1766,12 +1795,15 @@ export default function App() {
       <Text style={[styles.workerLog, themed.muted]}>{workerLog}</Text>
       {workerActivityBars.map((bar) => (
         <View key={bar.id} style={styles.ingestWrap}>
-          <Text style={[styles.ingestLabel, themed.muted]}>
-            {bar.label}{' '}
-            {bar.displayMode === 'bytes'
-              ? `${Math.round((bar.done / Math.max(bar.total, 1)) * 100)}% (${formatBytes(bar.done)} / ${formatBytes(bar.total)})`
-              : `${bar.done}/${Math.max(bar.total, 1)}`}
-          </Text>
+          <View style={styles.ingestLabelRow}>
+            <Text style={[styles.ingestLabel, themed.muted]}>
+              {bar.label}{' '}
+              {bar.displayMode === 'bytes'
+                ? `${Math.round((bar.done / Math.max(bar.total, 1)) * 100)}% (${formatBytes(bar.done)} / ${formatBytes(bar.total)})`
+                : `${bar.done}/${Math.max(bar.total, 1)}`}
+            </Text>
+            {bar.active ? <ActivityIndicator size='small' color={theme.accent} /> : null}
+          </View>
           {bar.subtitle ? (
             <Text style={[styles.ingestSubLabel, themed.muted]}>{bar.subtitle}</Text>
           ) : null}
@@ -2010,7 +2042,7 @@ export default function App() {
                     themed.panelSoft,
                     inviteDownloadBusy && styles.rowBtnDisabled
                   ]}
-                  onPress={() => void downloadInviteSelected('download')}
+                  onPress={() => void downloadInviteSelected()}
                   disabled={inviteDownloadBusy}
                 >
                   {inviteDownloadBusy ? (
@@ -2437,7 +2469,9 @@ function buildZipPayload(
     files[candidate] = b4a.from(String(item?.dataBase64 || ''), 'base64')
   }
 
-  const zipBytes = zipSync(files, { level: 6 })
+  // iOS JS thread can appear frozen during heavy compression.
+  // Use store mode (level 0) for fast, reliable archive creation.
+  const zipBytes = zipSync(files, { level: 0 })
   const zipBase64 = b4a.toString(b4a.from(zipBytes), 'base64')
   const zipNameBase = sanitizeFileName(String(sessionName || 'Host Session')).replaceAll(
     /\.[^.]+$/g,
@@ -2461,6 +2495,110 @@ async function savePersistedMetadata(payload: PersistedMetadata): Promise<void> 
   } catch {
     // Ignore write failures for now; worker transfer state remains intact.
   }
+}
+
+function promptIosDownloadDestination(includePhotos: boolean): Promise<'files' | 'photos' | null> {
+  return new Promise((resolve) => {
+    const buttons: Array<{
+      text: string
+      style?: 'cancel'
+      onPress?: () => void
+    }> = [
+      {
+        text: 'Save to Files app',
+        onPress: () => resolve('files')
+      }
+    ]
+    if (includePhotos) {
+      buttons.push({
+        text: 'Save to Photos app',
+        onPress: () => resolve('photos')
+      })
+    }
+    buttons.push({
+      text: 'Cancel',
+      style: 'cancel',
+      onPress: () => resolve(null)
+    })
+    Alert.alert('Save download to…', 'Choose where downloaded files should go.', buttons, {
+      cancelable: true,
+      onDismiss: () => resolve(null)
+    })
+  })
+}
+
+function isMediaMimeType(mimeType: string): boolean {
+  const value = String(mimeType || '').toLowerCase()
+  return value.startsWith('image/') || value.startsWith('video/')
+}
+
+async function saveArtifactsToIosPhotos(
+  artifacts: Array<{ path: string; mimeType: string }>
+): Promise<number> {
+  if (!artifacts.length) return 0
+  const media = artifacts.filter((item) => isMediaMimeType(item.mimeType))
+  if (!media.length) return 0
+  const permission = await MediaLibrary.requestPermissionsAsync()
+  if (!permission.granted) {
+    throw new Error('Photos permission was not granted.')
+  }
+  let saved = 0
+  for (const item of media) {
+    // Keep save order deterministic for user confirmation.
+    // eslint-disable-next-line no-await-in-loop
+    await MediaLibrary.saveToLibraryAsync(item.path)
+    saved += 1
+  }
+  return saved
+}
+
+async function shareArtifactsToIosFiles(
+  artifacts: Array<{ path: string; name: string; byteLength?: number }>,
+  onProgress?: (done: number, total: number, subtitle: string) => void
+): Promise<void> {
+  if (!artifacts.length) return
+  if (artifacts.length === 1) {
+    onProgress?.(1, 1, 'Opening Files share sheet...')
+    await Share.share({
+      url: artifacts[0].path,
+      title: artifacts[0].name
+    })
+    return
+  }
+  const files: Record<string, Uint8Array> = {}
+  const totalSteps = artifacts.length + 3
+  for (let i = 0; i < artifacts.length; i++) {
+    const artifact = artifacts[i]
+    const safeName = sanitizeFileName(artifact.name || `file-${i + 1}`)
+    onProgress?.(i, totalSteps, `Reading ${safeName}...`)
+    const readingStartedAt = Date.now()
+    const pulseTimer = setInterval(() => {
+      const seconds = Math.max(1, Math.floor((Date.now() - readingStartedAt) / 1000))
+      onProgress?.(i, totalSteps, `Reading ${safeName}... ${seconds}s`)
+    }, 700)
+    const dataBase64 = await FileSystem.readAsStringAsync(artifact.path, {
+      encoding: FileSystem.EncodingType.Base64
+    }).finally(() => {
+      clearInterval(pulseTimer)
+    })
+    files[safeName] = b4a.from(dataBase64, 'base64')
+    onProgress?.(i + 1, totalSteps, `Added ${safeName}`)
+  }
+  const compressBase = artifacts.length
+  const compressTop = Math.max(compressBase + 1, totalSteps - 1)
+  onProgress?.(compressBase, totalSteps, 'Compressing zip...')
+  // Use store mode to avoid long JS-thread compression stalls on RN.
+  const zipBytes = zipSync(files, { level: 0 })
+  const zipPath = `${FileSystem.cacheDirectory || FileSystem.documentDirectory || ''}PearDrop-${Date.now()}.zip`
+  onProgress?.(compressTop, totalSteps, 'Writing zip...')
+  await FileSystem.writeAsStringAsync(zipPath, b4a.toString(b4a.from(zipBytes), 'base64'), {
+    encoding: FileSystem.EncodingType.Base64
+  })
+  onProgress?.(totalSteps, totalSteps, 'Opening Files share sheet...')
+  await Share.share({
+    url: zipPath,
+    title: 'PearDrop download zip'
+  })
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
@@ -2975,9 +3113,16 @@ const styles = StyleSheet.create({
   ingestWrap: {
     marginTop: 4
   },
+  ingestLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8
+  },
   ingestLabel: {
     fontSize: 12,
-    marginBottom: 4
+    marginBottom: 4,
+    flexShrink: 1
   },
   ingestSubLabel: {
     fontSize: 11,
