@@ -15,11 +15,15 @@ const podspecPath = path.join(
 function patchPodspec(source) {
   let out = source
 
-  out = out.replace(/^\s*env_vars = .*$/m, '  env_vars = ""')
-
   out = out.replace(
-    /^\s*:script => .*get-app-config-ios\.sh.*$/m,
-    '    :script => "bash -l -c \\"\\\\\\"$PODS_TARGET_SRCROOT/../scripts/get-app-config-ios.sh\\\\\\"\\"",'
+    /^\s*env_vars\s*=\s*ENV\['PROJECT_ROOT'\].*$/m,
+    '  env_vars = ""'
+  )
+
+  // Execute the script path directly with quotes so workspace paths with spaces work.
+  out = out.replace(
+    /^\s*:script\s*=>\s*.*get-app-config-ios\.sh.*$/m,
+    '    :script => "\\\"$PODS_TARGET_SRCROOT/../scripts/get-app-config-ios.sh\\\"",'
   )
 
   return out

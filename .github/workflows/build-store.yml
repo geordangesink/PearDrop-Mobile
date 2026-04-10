@@ -1,0 +1,151 @@
+name: Build Mobile Store Releases
+
+on:
+  workflow_dispatch:
+    inputs:
+      submit:
+        description: Submit builds to App Store Connect and Play Console
+        required: true
+        default: false
+        type: boolean
+      profile:
+        description: EAS build/submit profile
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+          - preview
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-store-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-ios:
+    name: Build iOS (EAS)
+    runs-on: ubuntu-latest
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify EAS auth
+        run: |
+          if [ -z "${EXPO_TOKEN:-}" ]; then
+            echo "Missing secret: EXPO_TOKEN"
+            exit 1
+          fi
+          npx --yes eas-cli whoami
+
+      - name: Build iOS with EAS
+        run: npx --yes eas-cli build --platform ios --profile "${{ inputs.profile }}" --non-interactive --wait
+
+  build-android:
+    name: Build Android (EAS)
+    runs-on: ubuntu-latest
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify EAS auth
+        run: |
+          if [ -z "${EXPO_TOKEN:-}" ]; then
+            echo "Missing secret: EXPO_TOKEN"
+            exit 1
+          fi
+          npx --yes eas-cli whoami
+
+      - name: Build Android with EAS
+        run: npx --yes eas-cli build --platform android --profile "${{ inputs.profile }}" --non-interactive --wait
+
+  submit-ios:
+    name: Submit iOS (App Store Connect)
+    if: ${{ inputs.submit }}
+    needs: [build-ios]
+    runs-on: ubuntu-latest
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_ASC_APP_ID: ${{ secrets.APPLE_ASC_APP_ID }}
+      EXPO_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.EXPO_APPLE_APP_SPECIFIC_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify submit secrets
+        run: |
+          for key in EXPO_TOKEN APPLE_ID APPLE_TEAM_ID APPLE_ASC_APP_ID EXPO_APPLE_APP_SPECIFIC_PASSWORD; do
+            if [ -z "${!key:-}" ]; then
+              echo "Missing secret: $key"
+              exit 1
+            fi
+          done
+
+      - name: Submit latest iOS build
+        run: npx --yes eas-cli submit --platform ios --profile "${{ inputs.profile }}" --latest --non-interactive
+
+  submit-android:
+    name: Submit Android (Play Console)
+    if: ${{ inputs.submit }}
+    needs: [build-android]
+    runs-on: ubuntu-latest
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify submit secrets
+        run: |
+          for key in EXPO_TOKEN GOOGLE_SERVICE_ACCOUNT_JSON; do
+            if [ -z "${!key:-}" ]; then
+              echo "Missing secret: $key"
+              exit 1
+            fi
+          done
+
+      - name: Write Google service account key
+        run: |
+          key_file="$RUNNER_TEMP/google-play-service-account.json"
+          printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$key_file"
+          echo "GOOGLE_KEY_PATH=$key_file" >> "$GITHUB_ENV"
+
+      - name: Submit latest Android build
+        run: npx --yes eas-cli submit --platform android --profile "${{ inputs.profile }}" --latest --non-interactive --key "$GOOGLE_KEY_PATH"

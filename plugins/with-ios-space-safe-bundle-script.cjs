@@ -7,7 +7,7 @@ const { withDangerousMod } = require('expo/config-plugins')
 const FROM =
   "`\\\"$NODE_BINARY\\\" --print \\\"require('path').dirname(require.resolve('react-native/package.json')) + '/scripts/react-native-xcode.sh'\\\"`"
 const TO =
-  '"$(\\"$NODE_BINARY\\" --print \\\"require(\'path\').dirname(require.resolve(\'react-native/package.json\')) + \'/scripts/react-native-xcode.sh\'\\\")"'
+  '\\"$(\\"$NODE_BINARY\\" --print \\"require(\'path\').dirname(require.resolve(\'react-native/package.json\')) + \'/scripts/react-native-xcode.sh\'\\")\\"'
 
 module.exports = function withIosSpaceSafeBundleScript(config) {
   return withDangerousMod(config, [

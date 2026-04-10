@@ -11,10 +11,6 @@
       [
         "expo-build-properties",
         {
-          "buildReactNativeFromSource": true,
-          "ios": {
-            "buildReactNativeFromSource": true
-          },
           "android": {
             "minSdkVersion": 29
           }
