@@ -1,13 +1,15 @@
 {
   "expo": {
     "name": "PearDrop",
-    "slug": "pear-drop",
+    "slug": "peardrop",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "plugins": [
-      ["pear-runtime-react-native/plugin"],
+      [
+        "pear-runtime-react-native/plugin"
+      ],
       [
         "expo-build-properties",
         {
@@ -40,6 +42,12 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "67371a0c-0728-41a8-ae46-b03cab15a7f3"
+      }
+    },
+    "owner": "geordangesink"
   }
 }
