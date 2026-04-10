@@ -4,9 +4,24 @@ const os = require('bare-os')
 const dir = require('bare-storage')
 const b4a = require('b4a')
 const { bootstrapTransferWorker } = require('pear-drop-core')
+const FALLBACK_RELAY_URL = 'wss://pear-drops.up.railway.app'
+
+function resolveUpdaterConfig(argv = []) {
+  const values = Array.isArray(argv) ? argv : []
+  for (let i = values.length - 1; i >= 0; i--) {
+    const raw = String(values[i] || '').trim()
+    if (!raw || raw[0] !== '{') continue
+    try {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object') return parsed
+    } catch {}
+  }
+  return {}
+}
 
 async function main() {
-  const updaterConfig = JSON.parse(Bare.argv[2] || '{}')
+  const updaterConfig = resolveUpdaterConfig(Bare.argv)
+  if (!updaterConfig.relayUrl) updaterConfig.relayUrl = FALLBACK_RELAY_URL
   const persistentDir = updaterConfig.dir || dir.persistent()
   const baseRoot = updaterConfig.dev ? os.tmpdir() : persistentDir
 

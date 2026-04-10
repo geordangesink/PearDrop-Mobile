@@ -1,6 +1,6 @@
-# Pear Drops Mobile (MVP)
+# PearDrop Mobile (MVP)
 
-React Native + `pear-mobile` worker app for hosting or downloading Pear Drops invites.
+React Native + `pear-mobile` worker app for hosting or downloading PearDrop invites.
 
 ## Features
 
