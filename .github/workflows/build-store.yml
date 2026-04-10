@@ -30,6 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
+      EAS_BUILD_NO_EXPO_GO_WARNING: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -43,11 +45,17 @@ jobs:
 
       - name: Verify EAS auth
         run: |
-          if [ -z "${EXPO_TOKEN:-}" ]; then
-            echo "Missing secret: EXPO_TOKEN"
-            exit 1
-          fi
+          for key in EXPO_TOKEN EAS_PROJECT_ID; do
+            if [ -z "${!key:-}" ]; then
+              echo "Missing secret: $key"
+              exit 1
+            fi
+          done
           npx --yes eas-cli whoami
+
+      - name: Link EAS project
+        run: |
+          npx --yes eas-cli project:init --id "$EAS_PROJECT_ID" --force --non-interactive
 
       - name: Build iOS with EAS
         run: npx --yes eas-cli build --platform ios --profile "${{ inputs.profile }}" --non-interactive --wait
@@ -57,6 +65,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
+      EAS_BUILD_NO_EXPO_GO_WARNING: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -70,11 +80,17 @@ jobs:
 
       - name: Verify EAS auth
         run: |
-          if [ -z "${EXPO_TOKEN:-}" ]; then
-            echo "Missing secret: EXPO_TOKEN"
-            exit 1
-          fi
+          for key in EXPO_TOKEN EAS_PROJECT_ID; do
+            if [ -z "${!key:-}" ]; then
+              echo "Missing secret: $key"
+              exit 1
+            fi
+          done
           npx --yes eas-cli whoami
+
+      - name: Link EAS project
+        run: |
+          npx --yes eas-cli project:init --id "$EAS_PROJECT_ID" --force --non-interactive
 
       - name: Build Android with EAS
         run: npx --yes eas-cli build --platform android --profile "${{ inputs.profile }}" --non-interactive --wait
@@ -86,6 +102,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       APPLE_ASC_APP_ID: ${{ secrets.APPLE_ASC_APP_ID }}
@@ -103,12 +120,16 @@ jobs:
 
       - name: Verify submit secrets
         run: |
-          for key in EXPO_TOKEN APPLE_ID APPLE_TEAM_ID APPLE_ASC_APP_ID EXPO_APPLE_APP_SPECIFIC_PASSWORD; do
+          for key in EXPO_TOKEN EAS_PROJECT_ID APPLE_ID APPLE_TEAM_ID APPLE_ASC_APP_ID EXPO_APPLE_APP_SPECIFIC_PASSWORD; do
             if [ -z "${!key:-}" ]; then
               echo "Missing secret: $key"
               exit 1
             fi
           done
+
+      - name: Link EAS project
+        run: |
+          npx --yes eas-cli project:init --id "$EAS_PROJECT_ID" --force --non-interactive
 
       - name: Submit latest iOS build
         run: npx --yes eas-cli submit --platform ios --profile "${{ inputs.profile }}" --latest --non-interactive
@@ -120,6 +141,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
     steps:
       - uses: actions/checkout@v4
@@ -134,12 +156,16 @@ jobs:
 
       - name: Verify submit secrets
         run: |
-          for key in EXPO_TOKEN GOOGLE_SERVICE_ACCOUNT_JSON; do
+          for key in EXPO_TOKEN EAS_PROJECT_ID GOOGLE_SERVICE_ACCOUNT_JSON; do
             if [ -z "${!key:-}" ]; then
               echo "Missing secret: $key"
               exit 1
             fi
           done
+
+      - name: Link EAS project
+        run: |
+          npx --yes eas-cli project:init --id "$EAS_PROJECT_ID" --force --non-interactive
 
       - name: Write Google service account key
         run: |
