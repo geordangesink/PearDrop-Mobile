@@ -25,7 +25,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anonymous.peardrop",
+      "bundleIdentifier": "online.peardrop.app",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -36,7 +36,7 @@
         "backgroundColor": "#ffffff"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.peardrop"
+      "package": "online.peardrop.app"
     },
     "web": {
       "favicon": "./assets/favicon.png"
