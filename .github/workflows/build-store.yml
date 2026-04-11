@@ -136,16 +136,24 @@ jobs:
           node -e '
             const fs = require("fs")
             const profile = process.env.EAS_PROFILE
+            const appleId = process.env.APPLE_ID
+            const appleTeamId = process.env.APPLE_TEAM_ID
             const ascAppId = process.env.APPLE_ASC_APP_ID
             const easPath = "eas.json"
             const eas = JSON.parse(fs.readFileSync(easPath, "utf8"))
             eas.submit = eas.submit || {}
             eas.submit[profile] = eas.submit[profile] || {}
-            eas.submit[profile].ios = Object.assign({}, eas.submit[profile].ios, { ascAppId })
+            eas.submit[profile].ios = Object.assign({}, eas.submit[profile].ios, {
+              appleId,
+              appleTeamId,
+              ascAppId
+            })
             fs.writeFileSync(easPath, JSON.stringify(eas, null, 2) + "\n")
           '
         env:
           EAS_PROFILE: ${{ inputs.profile }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_ASC_APP_ID: ${{ secrets.APPLE_ASC_APP_ID }}
 
       - name: Submit latest iOS build
