@@ -7,9 +7,7 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "plugins": [
-      [
-        "pear-runtime-react-native/plugin"
-      ],
+      ["pear-runtime-react-native/plugin"],
       [
         "expo-build-properties",
         {

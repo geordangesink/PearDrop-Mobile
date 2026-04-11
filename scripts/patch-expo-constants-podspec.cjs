@@ -15,10 +15,7 @@ const podspecPath = path.join(
 function patchPodspec(source) {
   let out = source
 
-  out = out.replace(
-    /^\s*env_vars\s*=\s*ENV\['PROJECT_ROOT'\].*$/m,
-    '  env_vars = ""'
-  )
+  out = out.replace(/^\s*env_vars\s*=\s*ENV\['PROJECT_ROOT'\].*$/m, '  env_vars = ""')
 
   // Execute the script path directly with quotes so workspace paths with spaces work.
   out = out.replace(
