@@ -12,6 +12,7 @@
     "ios": "RCT_USE_RN_DEP=0 RCT_USE_PREBUILT_RNCORE=0 expo run:ios",
     "android": "expo run:android",
     "ios:prod-relay": "RCT_USE_RN_DEP=0 RCT_USE_PREBUILT_RNCORE=0 EXPO_PUBLIC_RELAY_URL=wss://pear-drops.up.railway.app expo run:ios",
+    "ipad:prod-relay": "RCT_USE_RN_DEP=0 RCT_USE_PREBUILT_RNCORE=0 EXPO_PUBLIC_RELAY_URL=wss://pear-drops.up.railway.app expo run:ios --device \"iPad Pro 13-inch (M4)\"",
     "android:prod-relay": "EXPO_PUBLIC_RELAY_URL=wss://pear-drops.up.railway.app expo run:android",
     "lint": "lunte",
     "format": "prettier . --write",
