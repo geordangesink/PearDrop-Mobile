@@ -2,7 +2,7 @@
   "name": "pear-drops-mobile",
   "productName": "PearDrop",
   "version": "0.1.0",
-  "upgrade": "pear://updates-disabled",
+  "upgrade": "pear://644hxudedfak84qzz6aq7ofqqguks7tz8ztz5yj1fgcknm6itheo",
   "main": "index.ts",
   "scripts": {
     "postinstall": "node scripts/patch-expo-constants-podspec.cjs",
