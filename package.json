@@ -6,6 +6,7 @@
   "main": "index.ts",
   "scripts": {
     "postinstall": "node scripts/patch-expo-constants-podspec.cjs",
+    "eas-build-post-install": "npm run bundle:bare",
     "bundle:bare": "npx bare-pack --host ios-arm64 --host ios-arm64-simulator --host ios-x64-simulator --host android-arm64 --linked --out ./src/worker.bundle.js ./workers/index.js",
     "prebuild": "npx expo prebuild",
     "ios": "RCT_USE_RN_DEP=0 RCT_USE_PREBUILT_RNCORE=0 expo run:ios",
