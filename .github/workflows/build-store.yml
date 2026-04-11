@@ -131,6 +131,23 @@ jobs:
         run: |
           npx --yes eas-cli project:init --id "$EAS_PROJECT_ID" --force --non-interactive
 
+      - name: Inject iOS submit config
+        run: |
+          node -e '
+            const fs = require("fs")
+            const profile = process.env.EAS_PROFILE
+            const ascAppId = process.env.APPLE_ASC_APP_ID
+            const easPath = "eas.json"
+            const eas = JSON.parse(fs.readFileSync(easPath, "utf8"))
+            eas.submit = eas.submit || {}
+            eas.submit[profile] = eas.submit[profile] || {}
+            eas.submit[profile].ios = Object.assign({}, eas.submit[profile].ios, { ascAppId })
+            fs.writeFileSync(easPath, JSON.stringify(eas, null, 2) + "\n")
+          '
+        env:
+          EAS_PROFILE: ${{ inputs.profile }}
+          APPLE_ASC_APP_ID: ${{ secrets.APPLE_ASC_APP_ID }}
+
       - name: Submit latest iOS build
         run: npx --yes eas-cli submit --platform ios --profile "${{ inputs.profile }}" --latest --non-interactive
 
@@ -173,5 +190,21 @@ jobs:
           printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$key_file"
           echo "GOOGLE_KEY_PATH=$key_file" >> "$GITHUB_ENV"
 
+      - name: Inject Android submit config
+        run: |
+          node -e '
+            const fs = require("fs")
+            const profile = process.env.EAS_PROFILE
+            const keyPath = process.env.GOOGLE_KEY_PATH
+            const easPath = "eas.json"
+            const eas = JSON.parse(fs.readFileSync(easPath, "utf8"))
+            eas.submit = eas.submit || {}
+            eas.submit[profile] = eas.submit[profile] || {}
+            eas.submit[profile].android = Object.assign({}, eas.submit[profile].android, { serviceAccountKeyPath: keyPath })
+            fs.writeFileSync(easPath, JSON.stringify(eas, null, 2) + "\n")
+          '
+        env:
+          EAS_PROFILE: ${{ inputs.profile }}
+
       - name: Submit latest Android build
-        run: npx --yes eas-cli submit --platform android --profile "${{ inputs.profile }}" --latest --non-interactive --key "$GOOGLE_KEY_PATH"
+        run: npx --yes eas-cli submit --platform android --profile "${{ inputs.profile }}" --latest --non-interactive
