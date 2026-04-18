@@ -2,11 +2,17 @@ function extractInviteUrl(url) {
   const text = String(url || '').trim()
   if (!text) return ''
   if (text.startsWith('peardrops://invite')) return text
+  if (text.startsWith('peardrops:/invite')) {
+    return `peardrops://invite${text.slice('peardrops:/invite'.length)}`
+  }
   if (text.startsWith('peardrops-web://join')) {
     try {
       const parsed = new URL(text)
       const nested = parsed.searchParams.get('invite')
-      if (nested && nested.startsWith('peardrops://invite')) return nested
+      if (nested) {
+        const normalizedNested = extractInviteUrl(nested)
+        if (normalizedNested) return normalizedNested
+      }
       if (parsed.search) return `peardrops://invite${parsed.search}`
     } catch {}
     return ''
@@ -14,9 +20,23 @@ function extractInviteUrl(url) {
 
   try {
     const parsed = new URL(text)
-    const invite = parsed.searchParams.get('invite')
-    if (invite && invite.startsWith('peardrops://invite')) return invite
+    const nestedInvite = parsed.searchParams.get('invite')
+    if (nestedInvite) {
+      const normalizedNested = extractInviteUrl(nestedInvite)
+      if (normalizedNested) return normalizedNested
+    }
+    if ((parsed.protocol === 'https:' || parsed.protocol === 'http:') && parsed.search) {
+      const queryOnly = extractInviteUrl(parsed.search)
+      if (queryOnly) return queryOnly
+    }
+    if (parsed.searchParams.has('drive')) {
+      return `peardrops://invite${parsed.search}`
+    }
   } catch {}
+
+  if (/^[?&](drive|room|topic|relay|web)=/i.test(text)) {
+    return `peardrops://invite${text.startsWith('?') ? text : `?${text.slice(1)}`}`
+  }
 
   return ''
 }

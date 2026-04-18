@@ -816,14 +816,15 @@ export default function App() {
   }
 
   const copyInviteIntoDownload = async (invite: string, feedbackKey = '') => {
-    const value = extractInviteUrl(invite)
-    if (!value) return
+    const nativeInvite = extractInviteUrl(invite)
+    if (!nativeInvite) return
+    const shareLink = `${PUBLIC_SITE_ORIGIN}/open/?invite=${encodeURIComponent(nativeInvite)}`
     try {
-      await Clipboard.setStringAsync(value)
+      await Clipboard.setStringAsync(shareLink)
     } catch {}
-    setLatestInvite(value)
-    flashCopyFeedback(feedbackKey || `copy:${value}`)
-    setStatus('Invite copied to clipboard.')
+    setLatestInvite(nativeInvite)
+    flashCopyFeedback(feedbackKey || `copy:${nativeInvite}`)
+    setStatus('Invite link copied to clipboard.')
   }
 
   const toggleStarHostInvite = (invite: string) => {
