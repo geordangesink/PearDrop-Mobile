@@ -198,6 +198,9 @@ export default function App() {
   const [selectedActiveHosts, setSelectedActiveHosts] = useState<Set<string>>(new Set())
   const [activeHosts, setActiveHosts] = useState<ActiveHost[]>([])
   const [hostDetailInvite, setHostDetailInvite] = useState('')
+  const [hostDetailSourceRefs, setHostDetailSourceRefs] = useState<any[]>([])
+  const [hostDetailSelectedRefs, setHostDetailSelectedRefs] = useState<Set<string>>(new Set())
+  const [hostDetailApplying, setHostDetailApplying] = useState(false)
   const [files, setFiles] = useState<FileRecord[]>([])
   const [starred, setStarred] = useState<Set<string>>(new Set())
   const [starredHosts, setStarredHosts] = useState<Set<string>>(new Set())
@@ -628,7 +631,14 @@ export default function App() {
           manifest: result?.manifest || [],
           invite: result?.nativeInvite || result?.invite || '',
           totalBytes: rawPayload.reduce((sum, item: any) => sum + Number(item?.byteLength || 0), 0),
-          fileCount: rawPayload.length
+          fileCount: rawPayload.length,
+          sourceRefs: picked
+            .map((item) => ({
+              type: 'file',
+              path: String(item.path || ''),
+              name: String(item.name || '')
+            }))
+            .filter((ref) => ref.path)
         })
       )
       const invite = result.nativeInvite || result.invite
@@ -636,6 +646,8 @@ export default function App() {
       setMainTab('upload')
       setFilesFilter('host')
       setHostDetailInvite('')
+      setHostDetailSourceRefs([])
+      setHostDetailSelectedRefs(new Set())
       setFiles((prev) =>
         prev.map((item) =>
           selected.has(item.id)
@@ -669,6 +681,186 @@ export default function App() {
     setHostNameModalVisible(true)
   }
 
+  const loadSourceRefsForInvite = (invite: string) => {
+    const merged = mergeHostHistory(hostHistory, history.filter((item) => item.type === 'upload'))
+    const match = merged.find((item) => String(item?.invite || '') === String(invite || ''))
+    const refs = Array.isArray(match?.sourceRefs) ? match.sourceRefs : []
+    return refs
+      .map((ref: any) => ({
+        id: `hostref:${Date.now()}:${Math.random().toString(16).slice(2, 8)}`,
+        type: ref?.type === 'folder' ? 'folder' : 'file',
+        path: String(ref?.path || ''),
+        name: String(ref?.name || (ref?.path ? ref.path.split('/').pop() : 'Source'))
+      }))
+      .filter((ref: any) => ref.path)
+  }
+
+  const openHostDetail = (invite: string) => {
+    setHostDetailInvite(invite)
+    setHostDetailSourceRefs(loadSourceRefsForInvite(invite))
+    setHostDetailSelectedRefs(new Set())
+    setHostDetailApplying(false)
+  }
+
+  const toggleHostDetailRefSelect = (id: string) => {
+    setHostDetailSelectedRefs((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const addHostDetailFiles = async () => {
+    if (hostDetailApplying) return
+    const pick = await DocumentPicker.getDocumentAsync({ multiple: true })
+    if (pick.canceled || !pick.assets.length) return
+    setHostDetailSourceRefs((prev) => {
+      const existing = new Set(prev.map((ref) => `${ref.type}::${ref.path}`))
+      const next = prev.slice()
+      for (const asset of pick.assets) {
+        const path = String(asset.uri || '').trim()
+        if (!path) continue
+        const key = `file::${path}`
+        if (existing.has(key)) continue
+        existing.add(key)
+        next.push({
+          id: `hostref:${Date.now()}:${Math.random().toString(16).slice(2, 8)}`,
+          type: 'file',
+          path,
+          name: String(asset.name || path.split('/').pop() || 'File')
+        })
+      }
+      return next
+    })
+  }
+
+  const removeSelectedHostDetailRefs = () => {
+    if (!hostDetailSelectedRefs.size) return
+    setHostDetailSourceRefs((prev) =>
+      prev.filter((ref) => !hostDetailSelectedRefs.has(String(ref?.id || '')))
+    )
+    setHostDetailSelectedRefs(new Set())
+  }
+
+  const applyHostDetailChanges = async () => {
+    if (!hostDetailInvite || hostDetailApplying) return
+    const host = activeHosts.find((item) => String(item.invite || '') === String(hostDetailInvite || ''))
+    if (!host) {
+      Alert.alert('Host unavailable', 'This host session is no longer active.')
+      return
+    }
+    if (!hostDetailSourceRefs.length) {
+      Alert.alert('No sources', 'Add at least one source before applying.')
+      return
+    }
+
+    try {
+      setHostDetailApplying(true)
+      const prepared = await buildUploadPayloadFromSourceRefs(hostDetailSourceRefs)
+      if (prepared.missing.length) {
+        const proceed = await promptContinueWithoutMissingRefs(prepared.missing)
+        if (!proceed) return
+      }
+      if (!prepared.payload.length) {
+        Alert.alert('No hostable files', 'No readable files remain after removing missing entries.')
+        return
+      }
+
+      await rpc.request(RpcCommand.STOP_HOST, { invite: hostDetailInvite })
+      const sessionName =
+        String(host.sessionLabel || host.sessionName || 'Host Session').trim() || 'Host Session'
+      const result = await rpc.request(RpcCommand.CREATE_UPLOAD, {
+        files: prepared.payload,
+        sessionName
+      })
+      const nextInvite = String(result?.nativeInvite || result?.invite || '').trim()
+      setHostHistory((prev) =>
+        rememberHostHistory(prev, result?.transfer, {
+          sessionName,
+          manifest: result?.manifest || [],
+          invite: nextInvite,
+          sourceRefs: prepared.keptRefs
+        })
+      )
+      setHostDetailInvite(nextInvite)
+      setHostDetailSourceRefs(
+        prepared.keptRefs.map((ref: any) => ({
+          id: `hostref:${Date.now()}:${Math.random().toString(16).slice(2, 8)}`,
+          type: 'file',
+          path: String(ref.path || ''),
+          name: String(ref.name || '')
+        }))
+      )
+      setHostDetailSelectedRefs(new Set())
+      setLatestInvite(nextInvite)
+      setStatus('Session changes applied and host restarted.')
+      await Promise.all([refresh(), refreshHosts()])
+    } catch (error: any) {
+      Alert.alert('Apply failed', error?.message || String(error))
+    } finally {
+      setHostDetailApplying(false)
+    }
+  }
+
+  const promptContinueWithoutMissingRefs = async (missing: string[]) => {
+    if (!missing.length) return true
+    const preview = missing.slice(0, 4).join('\n')
+    const tail = missing.length > 4 ? `\n…and ${missing.length - 4} more.` : ''
+    return new Promise<boolean>((resolve) => {
+      Alert.alert(
+        'Missing session sources',
+        `${preview}${tail}\n\nHost anyway and remove missing files?`,
+        [
+          { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+          { text: 'Host anyway', onPress: () => resolve(true) }
+        ]
+      )
+    })
+  }
+
+  const buildUploadPayloadFromSourceRefs = async (refs: any[]) => {
+    const payload: any[] = []
+    const keptRefs: any[] = []
+    const missing: string[] = []
+
+    for (const ref of refs) {
+      const refPath = String(ref?.path || '').trim()
+      if (!refPath) continue
+      try {
+        // Keep file order deterministic for consistent host manifests.
+        // eslint-disable-next-line no-await-in-loop
+        const info = await FileSystem.getInfoAsync(refPath)
+        if (!info.exists || info.isDirectory) {
+          missing.push(refPath)
+          continue
+        }
+        // eslint-disable-next-line no-await-in-loop
+        const dataBase64 = await FileSystem.readAsStringAsync(refPath, {
+          encoding: FileSystem.EncodingType.Base64
+        })
+        if (!dataBase64) {
+          missing.push(refPath)
+          continue
+        }
+        payload.push({
+          name: String(ref?.name || refPath.split('/').pop() || 'file'),
+          mimeType: guessMime(String(ref?.name || refPath)),
+          dataBase64
+        })
+        keptRefs.push({
+          type: 'file',
+          path: refPath,
+          name: String(ref?.name || refPath.split('/').pop() || 'file')
+        })
+      } catch {
+        missing.push(refPath)
+      }
+    }
+
+    return { payload, keptRefs, missing }
+  }
+
   const restartHostFromHistory = async (item: any) => {
     const transferId = String(item?.id || item?.transferId || '').trim()
     if (!transferId) return
@@ -686,10 +878,31 @@ export default function App() {
       upsertWorkerActivityBar('host', 'Starting host session...', 1, 3)
       setStatus('Starting host from history...')
       setWorkerLogMessage('starting host from history')
-      const result = await rpc.request(RpcCommand.START_HOST_FROM_TRANSFER, {
-        transferId,
-        sessionName
-      })
+      const savedRefs = Array.isArray(item?.sourceRefs) ? item.sourceRefs : []
+      let result: any = null
+      let resolvedRefs = savedRefs
+
+      if (savedRefs.length) {
+        const prepared = await buildUploadPayloadFromSourceRefs(savedRefs)
+        if (prepared.missing.length) {
+          const proceed = await promptContinueWithoutMissingRefs(prepared.missing)
+          if (!proceed) throw new Error('Re-host cancelled because some sources were missing.')
+        }
+        if (prepared.payload.length) {
+          result = await rpc.request(RpcCommand.CREATE_UPLOAD, {
+            files: prepared.payload,
+            sessionName
+          })
+          resolvedRefs = prepared.keptRefs
+        }
+      }
+
+      if (!result) {
+        result = await rpc.request(RpcCommand.START_HOST_FROM_TRANSFER, {
+          transferId,
+          sessionName
+        })
+      }
       upsertWorkerActivityBar('host', 'Preparing invite...', 2, 3)
       const reopenedKey = historyEntryKey(
         result?.transfer || { transferId, invite: result?.nativeInvite || result?.invite || '' }
@@ -705,7 +918,8 @@ export default function App() {
         rememberHostHistory(prev, result?.transfer, {
           sessionName,
           manifest: result?.manifest || [],
-          invite: result?.nativeInvite || result?.invite || ''
+          invite: result?.nativeInvite || result?.invite || '',
+          sourceRefs: resolvedRefs
         })
       )
       const invite = result.nativeInvite || result.invite || ''
@@ -714,6 +928,8 @@ export default function App() {
         setMainTab('upload')
         setFilesFilter('host')
         setHostDetailInvite('')
+        setHostDetailSourceRefs([])
+        setHostDetailSelectedRefs(new Set())
         setStatus('upload host created.')
         setWorkerLogMessage('host from history ready')
       }
@@ -1158,7 +1374,11 @@ export default function App() {
         return next
       })
       await rpc.request(RpcCommand.STOP_HOST, { invite })
-      if (hostDetailInvite === invite) setHostDetailInvite('')
+      if (hostDetailInvite === invite) {
+        setHostDetailInvite('')
+        setHostDetailSourceRefs([])
+        setHostDetailSelectedRefs(new Set())
+      }
       await refreshHosts()
       setStatus('Hosting stopped')
     } catch (error: any) {
@@ -1281,7 +1501,14 @@ export default function App() {
       return (
         <View style={styles.hostSection}>
           <View style={styles.hostDetailHead}>
-            <AppPressable style={styles.rowBtn} onPress={() => setHostDetailInvite('')}>
+            <AppPressable
+              style={styles.rowBtn}
+              onPress={() => {
+                setHostDetailInvite('')
+                setHostDetailSourceRefs([])
+                setHostDetailSelectedRefs(new Set())
+              }}
+            >
               <Text style={styles.rowBtnText}>← Back</Text>
             </AppPressable>
             <Text style={styles.hostDetailTitle}>Host session</Text>
@@ -1322,6 +1549,57 @@ export default function App() {
                 )}
               </AppPressable>
             </View>
+          </View>
+          <View style={[styles.hostCard, themed.panel]}>
+            <View style={styles.bulkBar}>
+              <Text style={[styles.bulkText, themed.muted]}>
+                {hostDetailSourceRefs.length} source{hostDetailSourceRefs.length === 1 ? '' : 's'}
+              </Text>
+              <AppPressable style={styles.rowBtn} onPress={() => void addHostDetailFiles()}>
+                <Text style={styles.rowBtnText}>＋ File</Text>
+              </AppPressable>
+              <AppPressable
+                style={styles.rowBtn}
+                onPress={removeSelectedHostDetailRefs}
+                disabled={!hostDetailSelectedRefs.size}
+              >
+                <Text style={[styles.rowBtnText, styles.rowDeleteText]}>Remove</Text>
+              </AppPressable>
+              <AppPressable
+                style={[styles.rowBtn, hostDetailApplying && styles.rowBtnDisabled]}
+                onPress={() => void applyHostDetailChanges()}
+                disabled={hostDetailApplying}
+              >
+                {hostDetailApplying ? (
+                  <ActivityIndicator size='small' color={theme.accent} />
+                ) : (
+                  <Text style={styles.rowBtnText}>Apply</Text>
+                )}
+              </AppPressable>
+            </View>
+            {hostDetailSourceRefs.length === 0 ? (
+              <Text style={[styles.muted, themed.muted]}>No editable source paths saved yet.</Text>
+            ) : (
+              hostDetailSourceRefs.map((ref) => {
+                const refId = String(ref?.id || '')
+                const selected = hostDetailSelectedRefs.has(refId)
+                return (
+                  <View key={refId} style={styles.hostRefRow}>
+                    <AppPressable style={styles.rowBtn} onPress={() => toggleHostDetailRefSelect(refId)}>
+                      <Text style={styles.rowBtnText}>{selected ? '☑' : '☐'}</Text>
+                    </AppPressable>
+                    <View style={styles.hostRefMeta}>
+                      <Text style={[styles.hostRefTitle, themed.text]} numberOfLines={1}>
+                        {String(ref?.name || 'Source')}
+                      </Text>
+                      <Text style={[styles.hostRefPath, themed.muted]} numberOfLines={2}>
+                        {String(ref?.path || '')}
+                      </Text>
+                    </View>
+                  </View>
+                )
+              })
+            )}
           </View>
         </View>
       )
@@ -1391,10 +1669,7 @@ export default function App() {
                   >
                     <Text style={styles.rowBtnText}>{selected ? '☑' : '☐'}</Text>
                   </AppPressable>
-                  <AppPressable
-                    style={styles.hostCardTitleWrap}
-                    onPress={() => setHostDetailInvite(host.invite)}
-                  >
+                  <AppPressable style={styles.hostCardTitleWrap} onPress={() => openHostDetail(host.invite)}>
                     <Text style={[styles.hostCardTitle, themed.text]}>
                       {label.title}
                       {label.hash ? (
@@ -1422,10 +1697,7 @@ export default function App() {
                             {starredHosts.has(String(host.invite || '')) ? '★' : '☆'}
                           </Text>
                         </AppPressable>
-                        <AppPressable
-                          style={styles.rowBtn}
-                          onPress={() => setHostDetailInvite(host.invite)}
-                        >
+                        <AppPressable style={styles.rowBtn} onPress={() => openHostDetail(host.invite)}>
                           <Text style={styles.rowBtnText}>Open</Text>
                         </AppPressable>
                         <AppPressable
@@ -2064,7 +2336,11 @@ export default function App() {
                   onPress={() => {
                     setFilesFilter(filter)
                     setSelectedHostHistory(new Set())
-                    if (filter !== 'host') setHostDetailInvite('')
+                    if (filter !== 'host') {
+                      setHostDetailInvite('')
+                      setHostDetailSourceRefs([])
+                      setHostDetailSelectedRefs(new Set())
+                    }
                     if (filter === 'host') void refreshHosts()
                   }}
                 >
@@ -2428,6 +2704,11 @@ function normalizeHostHistoryRecord(entry: any, fallback: any = {}) {
     : Array.isArray(fallback.manifest)
       ? fallback.manifest
       : []
+  const sourceRefs = Array.isArray(entry.sourceRefs)
+    ? entry.sourceRefs
+    : Array.isArray(fallback.sourceRefs)
+      ? fallback.sourceRefs
+      : []
   return {
     ...entry,
     type: 'upload',
@@ -2440,7 +2721,8 @@ function normalizeHostHistoryRecord(entry: any, fallback: any = {}) {
     createdAt: Number(entry.createdAt || fallback.createdAt || Date.now()),
     totalBytes: Number(entry.totalBytes || fallback.totalBytes || 0),
     fileCount: Number(entry.fileCount || fallback.fileCount || manifest.length || 0),
-    manifest
+    manifest,
+    sourceRefs
   }
 }
 
@@ -3366,6 +3648,24 @@ const styles = StyleSheet.create({
     borderColor: '#d8dce3',
     padding: 10,
     gap: 4
+  },
+  hostRefRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 6
+  },
+  hostRefMeta: {
+    flex: 1,
+    gap: 2
+  },
+  hostRefTitle: {
+    fontWeight: '600',
+    color: '#1f1f1f'
+  },
+  hostRefPath: {
+    fontSize: 12,
+    color: '#8b9aa8'
   },
   folderActionRow: {
     marginHorizontal: 16,
