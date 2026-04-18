@@ -105,6 +105,42 @@ type WorkerActivityBar = {
   active?: boolean
 }
 
+function localFileIdentityKey(entry: Partial<FileRecord> | null | undefined) {
+  const source = String(entry?.source || '').trim()
+  if (source !== 'local') return ''
+  const path = String(entry?.path || '').trim()
+  if (!path) return ''
+  return `${source}::${path}`
+}
+
+function mergeUniqueLocalFiles(incoming: FileRecord[], existing: FileRecord[]) {
+  if (!Array.isArray(incoming) || incoming.length === 0) return existing
+  const seen = new Set(existing.map((row) => localFileIdentityKey(row)).filter(Boolean))
+  const nextIncoming: FileRecord[] = []
+  for (const row of incoming) {
+    const key = localFileIdentityKey(row)
+    if (key && seen.has(key)) continue
+    if (key) seen.add(key)
+    nextIncoming.push(row)
+  }
+  return [...nextIncoming, ...existing]
+}
+
+function dedupeHostableSelection(rows: FileRecord[]) {
+  if (!Array.isArray(rows)) return []
+  const seen = new Set<string>()
+  const next: FileRecord[] = []
+  for (const row of rows) {
+    const key =
+      localFileIdentityKey(row) ||
+      `${String(row?.source || '')}::${String(row?.invite || '')}::${String(row?.drivePath || row?.path || row?.name || '')}`
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    next.push(row)
+  }
+  return next
+}
+
 const METADATA_PATH = `${FileSystem.documentDirectory || ''}peardrops-mobile-metadata.json`
 const DEFAULT_DEV_RELAY = 'wss://pear-drops.up.railway.app'
 const DEFAULT_PROD_RELAY = 'wss://pear-drops.up.railway.app'
@@ -572,8 +608,13 @@ export default function App() {
         upsertWorkerActivityBar('ingest', 'Loading files...', i + 1, pick.assets.length)
         if ((i + 1) % 20 === 0) await sleep(0)
       }
-      setFiles((prev) => [...payloadFiles, ...prev])
-      setStatus(`Added ${payloadFiles.length} file(s). Select and tap Host Upload.`)
+      let addedCount = 0
+      setFiles((prev) => {
+        const next = mergeUniqueLocalFiles(payloadFiles, prev)
+        addedCount = next.length - prev.length
+        return next
+      })
+      setStatus(`Added ${addedCount} new file(s). Select and tap Host Upload.`)
       setWorkerLogMessage('file indexing complete')
     } catch (error: any) {
       Alert.alert('Upload failed', error?.message || String(error))
@@ -585,7 +626,7 @@ export default function App() {
   const onHostSelected = async (sessionNameRaw: string, packaging: HostPackaging = 'raw') => {
     if (hostingBusy) return
     const sessionName = String(sessionNameRaw || '').trim() || 'Host Session'
-    const picked = files.filter((item) => selected.has(item.id))
+    const picked = dedupeHostableSelection(files.filter((item) => selected.has(item.id)))
     if (!picked.length) {
       Alert.alert('Select files', 'Select one or more files first.')
       return
