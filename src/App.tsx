@@ -110,6 +110,7 @@ const DEFAULT_DEV_RELAY = 'wss://pear-drops.up.railway.app'
 const DEFAULT_PROD_RELAY = 'wss://pear-drops.up.railway.app'
 const PUBLIC_SITE_ORIGIN = 'https://peardrop.online'
 const ANDROID_DOWNLOADS_FILE_URI = 'file:///storage/emulated/0/Download'
+const MOBILE_WORKER_INIT_TIMEOUT_MS = 45000
 let androidDownloadsDirUriCache = ''
 const ACTION_ICON_PLAY = '▶'
 const ACTION_ICON_COPY = '⧉'
@@ -184,6 +185,7 @@ export default function App() {
   const systemScheme = useColorScheme()
   const [status, setStatus] = useState('Starting worker...')
   const [workerLog, setWorkerLog] = useState('Worker logs: waiting for events.')
+  const [workerBooting, setWorkerBooting] = useState(true)
   const [filesFilter, setFilesFilter] = useState<FilesFilter>('all')
   const [localSearch, setLocalSearch] = useState('')
   const [inviteInput, setInviteInput] = useState('')
@@ -213,6 +215,7 @@ export default function App() {
   const [inviteEntries, setInviteEntries] = useState<InviteEntry[]>([])
   const [inviteSelected, setInviteSelected] = useState<Set<string>>(new Set())
   const previewTranslateY = useRef(new Animated.Value(0)).current
+  const skeletonShimmer = useRef(new Animated.Value(0)).current
   const [hostingBusy, setHostingBusy] = useState(false)
   const [stoppingInvites, setStoppingInvites] = useState<Set<string>>(new Set())
   const [stoppingSelectedHosts, setStoppingSelectedHosts] = useState(false)
@@ -348,8 +351,9 @@ export default function App() {
 
   useEffect(() => {
     void (async () => {
+      setWorkerBooting(true)
       try {
-        const initial = await requestInitWithRetry(rpc, 4)
+        const initial = await requestInit(rpc)
         setHistory(initial.transfers || [])
         setHostHistory((prev) => mergeHostHistory(prev, initial.transfers || []))
         try {
@@ -366,6 +370,8 @@ export default function App() {
       } catch (error: any) {
         setStatus(`Init failed: ${error?.message || String(error)}`)
         setWorkerLogMessage(`init failed - ${error?.message || String(error)}`)
+      } finally {
+        setWorkerBooting(false)
       }
     })()
 
@@ -375,6 +381,22 @@ export default function App() {
   useEffect(() => {
     filesRef.current = files
   }, [files])
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(skeletonShimmer, {
+        toValue: 1,
+        duration: 1100,
+        useNativeDriver: true
+      })
+    )
+    skeletonShimmer.setValue(0)
+    loop.start()
+    return () => {
+      loop.stop()
+      skeletonShimmer.stopAnimation()
+    }
+  }, [skeletonShimmer])
 
   useEffect(() => {
     void (async () => {
@@ -1793,6 +1815,27 @@ export default function App() {
     <View style={[styles.activityPanel, themed.panel]}>
       <Text style={[styles.status, themed.muted]}>{status}</Text>
       <Text style={[styles.workerLog, themed.muted]}>{workerLog}</Text>
+      {workerBooting ? (
+        <View style={styles.workerPanelSkeletonCard}>
+          <View style={[styles.skeletonBlock, themed.panelSoft]} />
+          <Animated.View
+            pointerEvents='none'
+            style={[
+              styles.skeletonShimmerOverlay,
+              {
+                transform: [
+                  {
+                    translateX: skeletonShimmer.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [-320, 320]
+                    })
+                  }
+                ]
+              }
+            ]}
+          />
+        </View>
+      ) : null}
       {workerActivityBars.map((bar) => (
         <View key={bar.id} style={styles.ingestWrap}>
           <View style={styles.ingestLabelRow}>
@@ -1818,6 +1861,36 @@ export default function App() {
           </View>
         </View>
       ))}
+    </View>
+  )
+
+  const renderStartupContainerSkeleton = (variant: 'upload' | 'download') => (
+    <View style={styles.skeletonListWrap}>
+      <View
+        style={[
+          styles.skeletonContainerCard,
+          themed.panel,
+          variant === 'upload' ? styles.skeletonUploadContainer : styles.skeletonDownloadContainer
+        ]}
+      >
+        <View style={[styles.skeletonBlock, themed.panelSoft]} />
+        <Animated.View
+          pointerEvents='none'
+          style={[
+            styles.skeletonShimmerOverlay,
+            {
+              transform: [
+                {
+                  translateX: skeletonShimmer.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [-320, 320]
+                  })
+                }
+              ]
+            }
+          ]}
+        />
+      </View>
     </View>
   )
 
@@ -2008,7 +2081,11 @@ export default function App() {
             </ScrollView>
 
             <View style={styles.filesList}>
-              {filesFilter === 'host' ? renderHostContent() : renderFileList()}
+              {workerBooting
+                ? renderStartupContainerSkeleton('upload')
+                : filesFilter === 'host'
+                  ? renderHostContent()
+                  : renderFileList()}
             </View>
           </>
         ) : (
@@ -2057,7 +2134,9 @@ export default function App() {
             {renderWorkerPanel()}
 
             <View style={styles.filesList}>
-              {inviteLoading ? (
+              {workerBooting ? (
+                renderStartupContainerSkeleton('download')
+              ) : inviteLoading ? (
                 <View style={[styles.inviteLoaderCard, themed.panel]}>
                   <ActivityIndicator size='small' color={theme.accent} />
                   <Text style={[styles.muted, themed.muted]}>Loading drive files...</Text>
@@ -2617,20 +2696,12 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
   })
 }
 
-async function requestInitWithRetry(
-  rpc: { request: (command: number, payload?: any) => Promise<any> },
-  attempts: number
-) {
-  let lastError: any = null
-  for (let i = 1; i <= attempts; i++) {
-    try {
-      return await withTimeout(rpc.request(RpcCommand.INIT), 20000, 'Worker init RPC timed out')
-    } catch (error) {
-      lastError = error
-      if (i < attempts) await sleep(750)
-    }
-  }
-  throw lastError || new Error('Worker init failed')
+async function requestInit(rpc: { request: (command: number, payload?: any) => Promise<any> }) {
+  return withTimeout(
+    rpc.request(RpcCommand.INIT),
+    MOBILE_WORKER_INIT_TIMEOUT_MS,
+    `Worker init RPC timed out after ${MOBILE_WORKER_INIT_TIMEOUT_MS}ms`
+  )
 }
 
 function sleep(ms: number): Promise<void> {
@@ -3422,6 +3493,82 @@ const styles = StyleSheet.create({
   workerLog: {
     color: '#6f6f6f',
     fontSize: 12
+  },
+  workerBootSkeletonWrap: {
+    marginTop: 6,
+    gap: 6
+  },
+  workerPanelSkeletonCard: {
+    marginTop: 6,
+    minHeight: 92,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#d7dfea',
+    overflow: 'hidden'
+  },
+  skeletonBlock: {
+    flex: 1
+  },
+  skeletonShimmerOverlay: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 170,
+    backgroundColor: 'rgba(255,255,255,0.45)'
+  },
+  workerBootSkeletonLineLg: {
+    height: 10,
+    width: '92%',
+    borderRadius: 999
+  },
+  workerBootSkeletonLineMd: {
+    height: 10,
+    width: '76%',
+    borderRadius: 999
+  },
+  workerBootSkeletonLineSm: {
+    height: 10,
+    width: '58%',
+    borderRadius: 999
+  },
+  skeletonListWrap: {
+    gap: 10
+  },
+  skeletonContainerCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#d7dfea',
+    overflow: 'hidden'
+  },
+  skeletonUploadContainer: {
+    minHeight: 270
+  },
+  skeletonDownloadContainer: {
+    minHeight: 250
+  },
+  skeletonThumb: {
+    width: 46,
+    height: 46,
+    borderRadius: 10
+  },
+  skeletonTextWrap: {
+    flex: 1,
+    gap: 7
+  },
+  skeletonLineLg: {
+    height: 10,
+    width: '86%',
+    borderRadius: 999
+  },
+  skeletonLineSm: {
+    height: 10,
+    width: '58%',
+    borderRadius: 999
+  },
+  skeletonActionDot: {
+    width: 22,
+    height: 22,
+    borderRadius: 999
   },
   fab: {
     position: 'absolute',
