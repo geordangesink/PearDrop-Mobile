@@ -87,21 +87,39 @@ export async function createWebRtcHost({ invite, rpc }) {
 }
 
 async function deriveStableSignalSeed(invite) {
+  const input = `peardrop-mobile-webrtc-share-v1\0${String(invite || '').trim()}`
   try {
     const digest = await ExpoCrypto.digestStringAsync(
       ExpoCrypto.CryptoDigestAlgorithm.SHA256,
-      `peardrop-mobile-webrtc-share-v1\0${String(invite || '').trim()}`
+      input
     )
-    return b4a.from(String(digest || '').trim() || randomHex32(), 'hex')
+    const hex = String(digest || '').trim()
+    if (hex.length === 64) return b4a.from(hex, 'hex')
   } catch {
-    return b4a.from(randomHex32(), 'hex')
+    // Fall through to deterministic JS fallback.
   }
+  return deterministicSeedFromString(input)
 }
 
-function randomHex32() {
+function deterministicSeedFromString(text) {
+  const input = String(text || '')
   const bytes = new Uint8Array(32)
-  for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256)
-  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')
+  for (let lane = 0; lane < 8; lane += 1) {
+    let hash = (0x811c9dc5 ^ (lane * 0x9e3779b1)) >>> 0
+    for (let i = 0; i < input.length; i += 1) {
+      hash ^= input.charCodeAt(i) & 0xff
+      hash = Math.imul(hash, 0x01000193) >>> 0
+      hash ^= (input.charCodeAt(i) >>> 8) & 0xff
+      hash = Math.imul(hash, 0x01000193) >>> 0
+      hash = (hash ^ (hash >>> 13)) >>> 0
+    }
+    const offset = lane * 4
+    bytes[offset] = hash & 0xff
+    bytes[offset + 1] = (hash >>> 8) & 0xff
+    bytes[offset + 2] = (hash >>> 16) & 0xff
+    bytes[offset + 3] = (hash >>> 24) & 0xff
+  }
+  return b4a.from(bytes)
 }
 
 function buildWebLink({ signalKey, relayUrl, invite }) {
