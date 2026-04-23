@@ -1,16 +1,14 @@
-# PearDrop Mobile (MVP)
+# PearDrop Mobile
 
-React Native + `pear-mobile` worker app for hosting or downloading PearDrop invites.
+React Native client for hosting and downloading PearDrop sessions on iOS/Android.
 
-## Features
+## Dev Architecture
 
-- starts worker where mobile updater/runtime is initialized
-- shared backend module reused from desktop (`../native-shared`)
-- upload files from mobile file picker
-- download by invite link
-- persistent transfer history in app worker storage
+- UI is React Native.
+- Runtime/transfer logic is delegated to the worker backend.
+- Core transfer logic is shared with desktop through `../native-shared`.
 
-## Dev
+## Local Run
 
 ```bash
 npm install
@@ -20,15 +18,8 @@ npm run ios
 
 Use `npm run android` for Android.
 
-## Test
+## Tests
 
 ```bash
 npm test
-```
-
-Release build commands:
-
-```bash
-npm run production:android
-npm run production:ios
 ```

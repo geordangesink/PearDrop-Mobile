@@ -2,7 +2,7 @@
   "name": "pear-drops-mobile",
   "productName": "PearDrop",
   "version": "0.1.0",
-  "upgrade": "pear://644hxudedfak84qzz6aq7ofqqguks7tz8ztz5yj1fgcknm6itheo",
+  "upgrade": "pear://ididi1cou1u7fcai161tc3ejggn1opm6ufcrzfz5dt8gymi1889y",
   "main": "index.ts",
   "scripts": {
     "postinstall": "node scripts/patch-expo-constants-podspec.cjs",
@@ -23,6 +23,7 @@
   "author": "",
   "license": "Apache-2.0",
   "dependencies": {
+    "@hyperswarm/dht-relay": "^0.4.3",
     "b4a": "^1.8.0",
     "bare-path": "^3.0.0",
     "bare-rpc": "^1.1.0",
@@ -30,18 +31,21 @@
     "expo": "~55.0.11",
     "expo-build-properties": "~55.0.11",
     "expo-clipboard": "~55.0.11",
+    "expo-crypto": "~15.0.7",
     "expo-document-picker": "~55.0.11",
     "expo-file-system": "~55.0.14",
     "expo-haptics": "^55.0.14",
     "expo-media-library": "~55.0.14",
     "expo-status-bar": "~55.0.5",
     "fflate": "^0.8.2",
-    "pear-drop-core": "^0.2.1",
+    "pear-drop-core": "^0.5.2",
     "pear-mobile": "^4.2.0",
     "pear-runtime-react-native": "^2.0.1",
     "react": "19.2.0",
     "react-native": "0.83.4",
-    "react-native-bare-kit": "^0.12.3"
+    "react-native-bare-kit": "^0.12.3",
+    "react-native-webrtc": "^124.0.7",
+    "sodium-javascript": "^0.8.0"
   },
   "devDependencies": {
     "@react-native/metro-config": "^0.84.0",

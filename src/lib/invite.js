@@ -41,6 +41,28 @@ function extractInviteUrl(url) {
   return ''
 }
 
+function extractShareInviteUrl(url) {
+  const text = String(url || '').trim()
+  if (!text) return ''
+  const directWeb = normalizeWebInvite(text)
+  if (directWeb) return directWeb
+  return extractInviteUrl(text)
+}
+
+function normalizeWebInvite(value) {
+  const raw = String(value || '').trim()
+  if (!raw.startsWith('peardrops-web://join')) return ''
+  try {
+    const parsed = new URL(raw)
+    const signal = String(parsed.searchParams.get('signal') || '').trim()
+    if (!signal) return ''
+    return `peardrops-web://join${parsed.search || ''}`
+  } catch {
+    return ''
+  }
+}
+
 module.exports = {
-  extractInviteUrl
+  extractInviteUrl,
+  extractShareInviteUrl
 }
