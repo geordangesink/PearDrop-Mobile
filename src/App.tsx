@@ -2839,7 +2839,7 @@ export default function App() {
                     style={[
                       styles.mainTabBtnText,
                       uploadView === tab.key && styles.mainTabBtnTextActive,
-                      uploadView === tab.key && themed.accentText
+                      uploadView === tab.key ? themed.accentText : themed.text
                     ]}
                   >
                     {tab.label}
