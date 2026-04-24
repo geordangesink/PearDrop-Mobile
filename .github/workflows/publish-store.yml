@@ -77,10 +77,10 @@ jobs:
           android_id="${{ inputs.android_build_id }}"
 
           if [ -z "$ios_id" ] && [ -f "_build-meta/ios-build.json" ]; then
-            ios_id="$(jq -r '.id // empty' _build-meta/ios-build.json)"
+            ios_id="$(jq -r 'if type=="array" then .[0].id // empty else .id // empty end' _build-meta/ios-build.json)"
           fi
           if [ -z "$android_id" ] && [ -f "_build-meta/android-build.json" ]; then
-            android_id="$(jq -r '.id // empty' _build-meta/android-build.json)"
+            android_id="$(jq -r 'if type=="array" then .[0].id // empty else .id // empty end' _build-meta/android-build.json)"
           fi
 
           if [ -z "$ios_id" ]; then

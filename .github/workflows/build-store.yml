@@ -11,6 +11,9 @@ on:
         options:
           - production
           - preview
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: read
@@ -32,7 +35,7 @@ jobs:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
       EAS_BUILD_NO_EXPO_GO_WARNING: 'true'
-      EAS_PROFILE: ${{ inputs.profile }}
+      EAS_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'production' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -68,9 +71,9 @@ jobs:
         id: capture
         run: |
           set -euo pipefail
-          build_id="$(jq -r '.id // empty' ios-build.json)"
-          build_number="$(jq -r '.buildNumber // empty' ios-build.json)"
-          app_version="$(jq -r '.appVersion // empty' ios-build.json)"
+          build_id="$(jq -r 'if type=="array" then .[0].id // empty else .id // empty end' ios-build.json)"
+          build_number="$(jq -r 'if type=="array" then .[0].buildNumber // empty else .buildNumber // empty end' ios-build.json)"
+          app_version="$(jq -r 'if type=="array" then .[0].appVersion // empty else .appVersion // empty end' ios-build.json)"
           if [ -z "$build_id" ]; then
             echo "Failed to extract iOS build id from ios-build.json"
             exit 1
@@ -97,7 +100,7 @@ jobs:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
       EAS_BUILD_NO_EXPO_GO_WARNING: 'true'
-      EAS_PROFILE: ${{ inputs.profile }}
+      EAS_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'production' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -133,9 +136,9 @@ jobs:
         id: capture
         run: |
           set -euo pipefail
-          build_id="$(jq -r '.id // empty' android-build.json)"
-          version_code="$(jq -r '.versionCode // empty' android-build.json)"
-          app_version="$(jq -r '.appVersion // empty' android-build.json)"
+          build_id="$(jq -r 'if type=="array" then .[0].id // empty else .id // empty end' android-build.json)"
+          version_code="$(jq -r 'if type=="array" then .[0].versionCode // empty else .versionCode // empty end' android-build.json)"
+          app_version="$(jq -r 'if type=="array" then .[0].appVersion // empty else .appVersion // empty end' android-build.json)"
           if [ -z "$build_id" ]; then
             echo "Failed to extract Android build id from android-build.json"
             exit 1
