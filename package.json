@@ -38,7 +38,7 @@
     "expo-media-library": "~55.0.14",
     "expo-status-bar": "~55.0.5",
     "fflate": "^0.8.2",
-    "pear-drop-core": "^0.6.3",
+    "pear-drop-core": "^0.6.4",
     "pear-mobile": "^4.2.0",
     "pear-runtime-react-native": "^2.0.1",
     "react": "19.2.0",
