@@ -1,0 +1,238 @@
+name: Publish Mobile Store Releases
+
+on:
+  workflow_run:
+    workflows:
+      - Build Mobile Store Releases
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: EAS submit profile
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+          - preview
+      ios_build_id:
+        description: Optional explicit iOS EAS build ID
+        required: false
+        type: string
+      android_build_id:
+        description: Optional explicit Android EAS build ID
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: mobile-publish-store-${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve-build-ids:
+    name: Resolve Build IDs
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') }}
+    runs-on: ubuntu-latest
+    outputs:
+      profile: ${{ steps.resolve.outputs.profile }}
+      ios_build_id: ${{ steps.resolve.outputs.ios_build_id }}
+      android_build_id: ${{ steps.resolve.outputs.android_build_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download iOS metadata artifact (workflow_run)
+        if: ${{ github.event_name == 'workflow_run' }}
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          run_id: ${{ github.event.workflow_run.id }}
+          name: mobile-ios-build-metadata
+          path: _build-meta
+          if_no_artifact_found: fail
+
+      - name: Download Android metadata artifact (workflow_run)
+        if: ${{ github.event_name == 'workflow_run' }}
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          run_id: ${{ github.event.workflow_run.id }}
+          name: mobile-android-build-metadata
+          path: _build-meta
+          if_no_artifact_found: fail
+
+      - name: Resolve IDs
+        id: resolve
+        run: |
+          set -euo pipefail
+
+          profile="${{ inputs.profile }}"
+          if [ -z "$profile" ]; then
+            profile="production"
+          fi
+
+          ios_id="${{ inputs.ios_build_id }}"
+          android_id="${{ inputs.android_build_id }}"
+
+          if [ -z "$ios_id" ] && [ -f "_build-meta/ios-build.json" ]; then
+            ios_id="$(jq -r '.id // empty' _build-meta/ios-build.json)"
+          fi
+          if [ -z "$android_id" ] && [ -f "_build-meta/android-build.json" ]; then
+            android_id="$(jq -r '.id // empty' _build-meta/android-build.json)"
+          fi
+
+          if [ -z "$ios_id" ]; then
+            echo "Unable to resolve iOS build id. Provide ios_build_id (workflow_dispatch) or run publish from a successful build workflow."
+            exit 1
+          fi
+          if [ -z "$android_id" ]; then
+            echo "Unable to resolve Android build id. Provide android_build_id (workflow_dispatch) or run publish from a successful build workflow."
+            exit 1
+          fi
+
+          echo "profile=$profile" >> "$GITHUB_OUTPUT"
+          echo "ios_build_id=$ios_id" >> "$GITHUB_OUTPUT"
+          echo "android_build_id=$android_id" >> "$GITHUB_OUTPUT"
+
+  submit-ios:
+    name: Submit iOS (App Store Connect)
+    needs: [resolve-build-ids]
+    runs-on: ubuntu-latest
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_ASC_APP_ID: ${{ secrets.APPLE_ASC_APP_ID }}
+      EXPO_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.EXPO_APPLE_APP_SPECIFIC_PASSWORD }}
+      EAS_PROFILE: ${{ needs.resolve-build-ids.outputs.profile }}
+      IOS_BUILD_ID: ${{ needs.resolve-build-ids.outputs.ios_build_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify submit secrets
+        run: |
+          for key in EXPO_TOKEN EAS_PROJECT_ID APPLE_ID APPLE_TEAM_ID APPLE_ASC_APP_ID EXPO_APPLE_APP_SPECIFIC_PASSWORD; do
+            if [ -z "${!key:-}" ]; then
+              echo "Missing secret: $key"
+              exit 1
+            fi
+          done
+
+      - name: Link EAS project
+        run: |
+          npx --yes eas-cli project:init --id "$EAS_PROJECT_ID" --force --non-interactive
+
+      - name: Inject iOS submit config
+        run: |
+          node -e '
+            const fs = require("fs")
+            const profile = process.env.EAS_PROFILE
+            const appleId = process.env.APPLE_ID
+            const appleTeamId = process.env.APPLE_TEAM_ID
+            const ascAppId = process.env.APPLE_ASC_APP_ID
+            const easPath = "eas.json"
+            const eas = JSON.parse(fs.readFileSync(easPath, "utf8"))
+            eas.submit = eas.submit || {}
+            eas.submit[profile] = eas.submit[profile] || {}
+            eas.submit[profile].ios = Object.assign({}, eas.submit[profile].ios, {
+              appleId,
+              appleTeamId,
+              ascAppId
+            })
+            fs.writeFileSync(easPath, JSON.stringify(eas, null, 2) + "\n")
+          '
+
+      - name: Submit specific iOS build
+        run: |
+          set -euo pipefail
+          log_file="$(mktemp)"
+          if npx --yes eas-cli submit --platform ios --profile "$EAS_PROFILE" --id "$IOS_BUILD_ID" --non-interactive 2>&1 | tee "$log_file"; then
+            exit 0
+          fi
+          if grep -qi "already submitted this version of the app" "$log_file"; then
+            echo "iOS build/version already submitted; treating as successful publish."
+            exit 0
+          fi
+          exit 1
+
+  submit-android:
+    name: Submit Android (Play Console)
+    needs: [resolve-build-ids]
+    runs-on: ubuntu-latest
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      EAS_PROFILE: ${{ needs.resolve-build-ids.outputs.profile }}
+      ANDROID_BUILD_ID: ${{ needs.resolve-build-ids.outputs.android_build_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify submit secrets
+        run: |
+          for key in EXPO_TOKEN EAS_PROJECT_ID GOOGLE_SERVICE_ACCOUNT_JSON; do
+            if [ -z "${!key:-}" ]; then
+              echo "Missing secret: $key"
+              exit 1
+            fi
+          done
+
+      - name: Link EAS project
+        run: |
+          npx --yes eas-cli project:init --id "$EAS_PROJECT_ID" --force --non-interactive
+
+      - name: Write Google service account key
+        run: |
+          key_file="$RUNNER_TEMP/google-play-service-account.json"
+          printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$key_file"
+          echo "GOOGLE_KEY_PATH=$key_file" >> "$GITHUB_ENV"
+
+      - name: Inject Android submit config
+        run: |
+          node -e '
+            const fs = require("fs")
+            const profile = process.env.EAS_PROFILE
+            const keyPath = process.env.GOOGLE_KEY_PATH
+            const easPath = "eas.json"
+            const eas = JSON.parse(fs.readFileSync(easPath, "utf8"))
+            eas.submit = eas.submit || {}
+            eas.submit[profile] = eas.submit[profile] || {}
+            eas.submit[profile].android = Object.assign({}, eas.submit[profile].android, {
+              serviceAccountKeyPath: keyPath
+            })
+            fs.writeFileSync(easPath, JSON.stringify(eas, null, 2) + "\n")
+          '
+
+      - name: Submit specific Android build
+        run: |
+          set -euo pipefail
+          log_file="$(mktemp)"
+          if npx --yes eas-cli submit --platform android --profile "$EAS_PROFILE" --id "$ANDROID_BUILD_ID" --non-interactive 2>&1 | tee "$log_file"; then
+            exit 0
+          fi
+
+          if grep -q "Google Play Android Developer API has not been used in project" "$log_file"; then
+            echo "Google Play Android Developer API is disabled in the GCP project used by GOOGLE_SERVICE_ACCOUNT_JSON."
+            echo "Enable androidpublisher.googleapis.com in that exact GCP project and retry:"
+            echo "https://console.developers.google.com/apis/api/androidpublisher.googleapis.com/overview?project=<your-project-id>"
+          fi
+          exit 1

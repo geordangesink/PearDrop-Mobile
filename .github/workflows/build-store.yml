@@ -3,11 +3,6 @@ name: Build Mobile Store Releases
 on:
   workflow_dispatch:
     inputs:
-      submit:
-        description: Submit builds to App Store Connect and Play Console
-        required: true
-        default: false
-        type: boolean
       profile:
         description: EAS build/submit profile
         required: true
@@ -19,19 +14,25 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  group: mobile-store-${{ github.ref }}
+  group: mobile-build-store-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build-ios:
     name: Build iOS (EAS)
     runs-on: ubuntu-latest
+    outputs:
+      build_id: ${{ steps.capture.outputs.build_id }}
+      build_number: ${{ steps.capture.outputs.build_number }}
+      app_version: ${{ steps.capture.outputs.app_version }}
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
       EAS_BUILD_NO_EXPO_GO_WARNING: 'true'
+      EAS_PROFILE: ${{ inputs.profile }}
     steps:
       - uses: actions/checkout@v4
 
@@ -58,15 +59,45 @@ jobs:
           npx --yes eas-cli project:init --id "$EAS_PROJECT_ID" --force --non-interactive
 
       - name: Build iOS with EAS
-        run: npx --yes eas-cli build --platform ios --profile "${{ inputs.profile }}" --non-interactive --wait
+        run: |
+          set -euo pipefail
+          npx --yes eas-cli build --platform ios --profile "$EAS_PROFILE" --non-interactive --wait --json > ios-build.json
+          cat ios-build.json
+
+      - name: Capture iOS build metadata
+        id: capture
+        run: |
+          set -euo pipefail
+          build_id="$(jq -r '.id // empty' ios-build.json)"
+          build_number="$(jq -r '.buildNumber // empty' ios-build.json)"
+          app_version="$(jq -r '.appVersion // empty' ios-build.json)"
+          if [ -z "$build_id" ]; then
+            echo "Failed to extract iOS build id from ios-build.json"
+            exit 1
+          fi
+          echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+
+      - name: Upload iOS build metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-ios-build-metadata
+          path: ios-build.json
+          if-no-files-found: error
 
   build-android:
     name: Build Android (EAS)
     runs-on: ubuntu-latest
+    outputs:
+      build_id: ${{ steps.capture.outputs.build_id }}
+      version_code: ${{ steps.capture.outputs.version_code }}
+      app_version: ${{ steps.capture.outputs.app_version }}
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
       EAS_BUILD_NO_EXPO_GO_WARNING: 'true'
+      EAS_PROFILE: ${{ inputs.profile }}
     steps:
       - uses: actions/checkout@v4
 
@@ -93,126 +124,41 @@ jobs:
           npx --yes eas-cli project:init --id "$EAS_PROJECT_ID" --force --non-interactive
 
       - name: Build Android with EAS
-        run: npx --yes eas-cli build --platform android --profile "${{ inputs.profile }}" --non-interactive --wait
+        run: |
+          set -euo pipefail
+          npx --yes eas-cli build --platform android --profile "$EAS_PROFILE" --non-interactive --wait --json > android-build.json
+          cat android-build.json
 
-  submit-ios:
-    name: Submit iOS (App Store Connect)
-    if: ${{ inputs.submit }}
-    needs: [build-ios]
-    runs-on: ubuntu-latest
-    env:
-      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-      EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      APPLE_ASC_APP_ID: ${{ secrets.APPLE_ASC_APP_ID }}
-      EXPO_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.EXPO_APPLE_APP_SPECIFIC_PASSWORD }}
-    steps:
-      - uses: actions/checkout@v4
+      - name: Capture Android build metadata
+        id: capture
+        run: |
+          set -euo pipefail
+          build_id="$(jq -r '.id // empty' android-build.json)"
+          version_code="$(jq -r '.versionCode // empty' android-build.json)"
+          app_version="$(jq -r '.appVersion // empty' android-build.json)"
+          if [ -z "$build_id" ]; then
+            echo "Failed to extract Android build id from android-build.json"
+            exit 1
+          fi
+          echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
+          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@v4
+      - name: Upload Android build metadata artifact
+        uses: actions/upload-artifact@v4
         with:
-          node-version: 20
-          cache: npm
+          name: mobile-android-build-metadata
+          path: android-build.json
+          if-no-files-found: error
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Verify submit secrets
-        run: |
-          for key in EXPO_TOKEN EAS_PROJECT_ID APPLE_ID APPLE_TEAM_ID APPLE_ASC_APP_ID EXPO_APPLE_APP_SPECIFIC_PASSWORD; do
-            if [ -z "${!key:-}" ]; then
-              echo "Missing secret: $key"
-              exit 1
-            fi
-          done
-
-      - name: Link EAS project
-        run: |
-          npx --yes eas-cli project:init --id "$EAS_PROJECT_ID" --force --non-interactive
-
-      - name: Inject iOS submit config
-        run: |
-          node -e '
-            const fs = require("fs")
-            const profile = process.env.EAS_PROFILE
-            const appleId = process.env.APPLE_ID
-            const appleTeamId = process.env.APPLE_TEAM_ID
-            const ascAppId = process.env.APPLE_ASC_APP_ID
-            const easPath = "eas.json"
-            const eas = JSON.parse(fs.readFileSync(easPath, "utf8"))
-            eas.submit = eas.submit || {}
-            eas.submit[profile] = eas.submit[profile] || {}
-            eas.submit[profile].ios = Object.assign({}, eas.submit[profile].ios, {
-              appleId,
-              appleTeamId,
-              ascAppId
-            })
-            fs.writeFileSync(easPath, JSON.stringify(eas, null, 2) + "\n")
-          '
-        env:
-          EAS_PROFILE: ${{ inputs.profile }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_ASC_APP_ID: ${{ secrets.APPLE_ASC_APP_ID }}
-
-      - name: Submit latest iOS build
-        run: npx --yes eas-cli submit --platform ios --profile "${{ inputs.profile }}" --latest --non-interactive
-
-  submit-android:
-    name: Submit Android (Play Console)
-    if: ${{ inputs.submit }}
-    needs: [build-android]
+  build-summary:
+    name: Build Summary
+    needs: [build-ios, build-android]
     runs-on: ubuntu-latest
-    env:
-      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-      EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
-      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Verify submit secrets
+      - name: Build IDs
         run: |
-          for key in EXPO_TOKEN EAS_PROJECT_ID GOOGLE_SERVICE_ACCOUNT_JSON; do
-            if [ -z "${!key:-}" ]; then
-              echo "Missing secret: $key"
-              exit 1
-            fi
-          done
-
-      - name: Link EAS project
-        run: |
-          npx --yes eas-cli project:init --id "$EAS_PROJECT_ID" --force --non-interactive
-
-      - name: Write Google service account key
-        run: |
-          key_file="$RUNNER_TEMP/google-play-service-account.json"
-          printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > "$key_file"
-          echo "GOOGLE_KEY_PATH=$key_file" >> "$GITHUB_ENV"
-
-      - name: Inject Android submit config
-        run: |
-          node -e '
-            const fs = require("fs")
-            const profile = process.env.EAS_PROFILE
-            const keyPath = process.env.GOOGLE_KEY_PATH
-            const easPath = "eas.json"
-            const eas = JSON.parse(fs.readFileSync(easPath, "utf8"))
-            eas.submit = eas.submit || {}
-            eas.submit[profile] = eas.submit[profile] || {}
-            eas.submit[profile].android = Object.assign({}, eas.submit[profile].android, { serviceAccountKeyPath: keyPath })
-            fs.writeFileSync(easPath, JSON.stringify(eas, null, 2) + "\n")
-          '
-        env:
-          EAS_PROFILE: ${{ inputs.profile }}
-
-      - name: Submit latest Android build
-        run: npx --yes eas-cli submit --platform android --profile "${{ inputs.profile }}" --latest --non-interactive
+          echo "iOS build id:     ${{ needs.build-ios.outputs.build_id }}"
+          echo "iOS version/build:${{ needs.build-ios.outputs.app_version }} (${{ needs.build-ios.outputs.build_number }})"
+          echo "Android build id: ${{ needs.build-android.outputs.build_id }}"
+          echo "Android version:  ${{ needs.build-android.outputs.app_version }} (code ${{ needs.build-android.outputs.version_code }})"

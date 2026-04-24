@@ -8,17 +8,28 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     name: Lint
+    defaults:
+      run:
+        working-directory: .
     steps:
-      - uses: holepunchto/actions/node-base@v1
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
       - run: npm run lint
   test:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            platform: linux
-    runs-on: ${{ matrix.os }}
-    name: Test / ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    name: Test
+    defaults:
+      run:
+        working-directory: .
     steps:
-      - uses: holepunchto/actions/bare-base@v1
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
       - run: npm test
