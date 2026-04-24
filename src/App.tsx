@@ -281,11 +281,13 @@ export default function App() {
   const [copyFeedbackKey, setCopyFeedbackKey] = useState('')
   const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const filesRef = useRef<FileRecord[]>([])
+  const activeHostsRef = useRef<ActiveHost[]>([])
   const rpcRef = useRef<any>(null)
   const activityTimingRef = useRef<Map<string, { startedAt: number; etaMs: number }>>(new Map())
   const invitePreviewLoadRef = useRef<Set<string>>(new Set())
   const webRtcShareHostsRef = useRef<Map<string, any>>(new Map())
   const webRtcShareHostPromisesRef = useRef<Map<string, Promise<string>>>(new Map())
+  const teardownPromiseRef = useRef<Promise<void> | null>(null)
   const isDark = themeMode === 'system' ? systemScheme !== 'light' : themeMode === 'dark'
   const theme = useMemo(() => getTheme(isDark), [isDark])
   const themed = useMemo(
@@ -507,6 +509,55 @@ export default function App() {
   }, [])
   rpcRef.current = rpc
 
+  const teardownWorker = useCallback(async () => {
+    if (teardownPromiseRef.current) return await teardownPromiseRef.current
+
+    const run = (async () => {
+      const client = rpcRef.current
+      const invites = new Set<string>()
+
+      for (const host of activeHostsRef.current || []) {
+        const invite = extractInviteUrl(String(host?.invite || '').trim())
+        if (invite) invites.add(invite)
+      }
+
+      if (client && typeof client.request === 'function') {
+        try {
+          const listed = await client.request(RpcCommand.LIST_ACTIVE_HOSTS)
+          const hosts = Array.isArray(listed?.hosts) ? listed.hosts : []
+          for (const host of hosts) {
+            const invite = extractInviteUrl(String(host?.invite || '').trim())
+            if (invite) invites.add(invite)
+          }
+        } catch {}
+
+        if (invites.size > 0) {
+          await Promise.allSettled(
+            Array.from(invites).map(async (invite) => {
+              await client.request(RpcCommand.STOP_HOST, { invite })
+            })
+          )
+        }
+      }
+
+      closeWebRtcShareHosts()
+
+      if (client && typeof client.request === 'function') {
+        try {
+          await Promise.race([
+            client.request(RpcCommand.SHUTDOWN),
+            new Promise((resolve) => setTimeout(resolve, 2000))
+          ])
+        } catch {}
+      }
+
+      rpc.destroy()
+    })()
+
+    teardownPromiseRef.current = run
+    await run
+  }, [closeWebRtcShareHosts, rpc])
+
   useEffect(() => {
     void (async () => {
       setWorkerBooting(true)
@@ -534,10 +585,9 @@ export default function App() {
     })()
 
     return () => {
-      closeWebRtcShareHosts()
-      rpc.destroy()
+      void teardownWorker()
     }
-  }, [closeWebRtcShareHosts, listActiveHostsWithWebRtc, rpc])
+  }, [listActiveHostsWithWebRtc, rpc, teardownWorker])
 
   useEffect(() => {
     filesRef.current = files
@@ -656,6 +706,10 @@ export default function App() {
       const next = new Set(Array.from(prev).filter((invite) => activeInviteSet.has(invite)))
       return next
     })
+  }, [activeHosts])
+
+  useEffect(() => {
+    activeHostsRef.current = activeHosts
   }, [activeHosts])
 
   useEffect(() => {
