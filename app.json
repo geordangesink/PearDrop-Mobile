@@ -27,7 +27,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "online.peardrop.app",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSCameraUsageDescription": "PearDrop uses the camera to let you capture photos and videos to upload and share."
       }
     },
     "android": {
