@@ -43,12 +43,15 @@ export async function createWebRtcHost({ invite, rpc }) {
 
   const relayTransport = new RelayStream(true, relaySocket)
   patchEmitterCompat(relayTransport)
+  relayTransport.on?.('error', onBenignConnectionError)
   const seed = await deriveStableSignalSeed(normalizedInvite)
   const keyPair = DHT.keyPair(seed)
   const dht = new DHT(relayTransport, { keyPair })
   const server = dht.createServer()
+  server.on?.('error', onBenignConnectionError)
 
   server.on('connection', (signalSocket) => {
+    signalSocket.on?.('error', onBenignConnectionError)
     void handleSignalConnection(signalSocket, { invite: normalizedInvite, rpc })
   })
   await server.listen(keyPair)
@@ -131,6 +134,7 @@ function buildWebLink({ signalKey, relayUrl, invite }) {
 }
 
 async function handleSignalConnection(signalSocket, { invite, rpc }) {
+  signalSocket.on?.('error', onBenignConnectionError)
   const peer = createLinePeer(signalSocket)
   let pc = null
   let dataChannel = null
@@ -200,7 +204,6 @@ async function handleSignalConnection(signalSocket, { invite, rpc }) {
       if (event.candidate) {
         const normalized = normalizeCandidateForSignal(event.candidate)
         if (!normalized) return
-        if (isRelayIceCandidate(normalized)) return
         if (isMdnsIceCandidate(normalized)) return
         peer.send({
           type: 'candidate',
@@ -311,7 +314,6 @@ async function handleSignalConnection(signalSocket, { invite, rpc }) {
       if (candidateOfferId > 0 && currentOfferId > 0 && candidateOfferId !== currentOfferId) {
         return
       }
-      if (isRelayIceCandidate(normalized)) return
       if (isMdnsIceCandidate(normalized)) return
       if (!remoteDescriptionSet) {
         pendingRemoteCandidates.push(normalized)
@@ -340,6 +342,24 @@ async function handleSignalConnection(signalSocket, { invite, rpc }) {
   signalSocket.on('close', () => {
     destroyPeerConnection()
   })
+}
+
+function onBenignConnectionError(error) {
+  if (isBenignConnectionError(error)) return
+  console.error('Non-benign relay connection error:', error)
+}
+
+function isBenignConnectionError(error) {
+  const code = String(error?.code || '')
+  const message = String(error?.message || '')
+  return (
+    code === 'ECONNRESET' ||
+    code === 'EPIPE' ||
+    code === 'ETIMEDOUT' ||
+    message.includes('connection reset by peer') ||
+    message.includes('stream was destroyed') ||
+    message.includes('socket closed')
+  )
 }
 
 function bindDataChannel(channel, { invite, rpc }) {
@@ -515,18 +535,11 @@ function sanitizeIceSdp(sdpText) {
       continue
     }
     if (value.startsWith('a=candidate:')) {
-      if (isRelayIceCandidate(value)) continue
       if (isMdnsIceCandidate(value)) continue
     }
     out.push(value)
   }
   return out.join('\r\n')
-}
-
-function isRelayIceCandidate(candidateLike) {
-  const line =
-    typeof candidateLike === 'string' ? candidateLike : String(candidateLike?.candidate || '')
-  return /\btyp\s+relay\b/i.test(line)
 }
 
 function isMdnsIceCandidate(candidateLike) {
