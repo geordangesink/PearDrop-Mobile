@@ -678,9 +678,35 @@ export default function App() {
     setHostHistory((prev) => mergeHostHistory(prev, result.transfers || []))
   }
 
+  const prewarmWebRtcShareHosts = useCallback(
+    async (hosts: ActiveHost[]) => {
+      const list = Array.isArray(hosts) ? hosts : []
+      await Promise.all(
+        list.map(async (host) => {
+          const invite = extractInviteUrl(String(host?.invite || '').trim())
+          if (!invite) return
+          try {
+            const resolved = await ensureWebRtcShareInvite(invite)
+            if (!hasWebRtcSignal(resolved)) {
+              throw new Error('Missing WebRTC signal key in share invite')
+            }
+          } catch (error: any) {
+            setWorkerLogMessage(
+              `share link prewarm failed for ${invite.slice(0, 16)}...: ${String(
+                error?.message || error || 'unknown error'
+              )}`
+            )
+          }
+        })
+      )
+    },
+    [ensureWebRtcShareInvite]
+  )
+
   const refreshHosts = async () => {
     const hosts = await listActiveHostsWithWebRtc()
     setActiveHosts(hosts)
+    void prewarmWebRtcShareHosts(hosts)
   }
 
   useEffect(() => {
@@ -1951,7 +1977,7 @@ export default function App() {
             </View>
           </View>
           <View style={[styles.hostCard, themed.panel]}>
-            <View style={styles.bulkBar}>
+            <View style={[styles.bulkBar, themed.panel]}>
               <Text style={[styles.bulkText, themed.muted]}>
                 {hostDetailSourceRefs.length} source{hostDetailSourceRefs.length === 1 ? '' : 's'}
               </Text>
@@ -2752,7 +2778,7 @@ export default function App() {
             style={[
               styles.mainTabBtnText,
               mainTab === 'upload' && styles.mainTabBtnTextActive,
-              mainTab === 'upload' && themed.accentText
+              mainTab === 'upload' ? themed.accentText : themed.text
             ]}
           >
             Upload
@@ -2770,7 +2796,7 @@ export default function App() {
             style={[
               styles.mainTabBtnText,
               mainTab === 'download' && styles.mainTabBtnTextActive,
-              mainTab === 'download' && themed.accentText
+              mainTab === 'download' ? themed.accentText : themed.text
             ]}
           >
             Download
@@ -3845,7 +3871,7 @@ const styles = StyleSheet.create({
   mainTabBtnText: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#607086'
+    color: '#d8dce3'
   },
   mainTabBtnTextActive: {
     color: '#fff'
@@ -3945,7 +3971,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#d9d9d9',
     borderRadius: 14,
-    backgroundColor: '#fff',
+    backgroundColor: '#4b4b4b',
     padding: 12,
     flexDirection: 'row',
     flexWrap: 'wrap',
