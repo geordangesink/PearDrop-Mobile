@@ -3,6 +3,7 @@ const path = require('bare-path')
 const os = require('bare-os')
 const dir = require('bare-storage')
 const b4a = require('b4a')
+const PearSuspension = require('pear-suspension')
 const { bootstrapTransferWorker } = require('pear-drop-core')
 const FALLBACK_RELAY_URL = 'wss://pear-drops.up.railway.app'
 
@@ -25,12 +26,21 @@ async function main() {
   const persistentDir = updaterConfig.dir || dir.persistent()
   const baseRoot = updaterConfig.dev ? os.tmpdir() : persistentDir
 
-  await bootstrapTransferWorker({
+  const worker = await bootstrapTransferWorker({
     ipc: Bare.IPC,
     baseDir: path.join(baseRoot, 'pear-drops-mobile'),
     metadataDir: path.join(persistentDir, 'pear-drops-mobile-history'),
     updaterConfig,
     relayUrl: updaterConfig.relayUrl || ''
+  })
+
+  // Keep worker resources healthy across app background/foreground transitions.
+  // Parent worklet calls suspend/resume; this child handles runtime lifecycle hooks.
+  new PearSuspension({
+    store: worker?.backend?.store,
+    swarm: worker?.backend?.swarm,
+    async suspend() {},
+    async resume() {}
   })
 }
 

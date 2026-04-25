@@ -283,6 +283,7 @@ export default function App() {
   const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const filesRef = useRef<FileRecord[]>([])
   const activeHostsRef = useRef<ActiveHost[]>([])
+  const workletRef = useRef<any>(null)
   const rpcRef = useRef<any>(null)
   const activityTimingRef = useRef<Map<string, { startedAt: number; etaMs: number }>>(new Map())
   const invitePreviewLoadRef = useRef<Set<string>>(new Set())
@@ -488,6 +489,7 @@ export default function App() {
 
   const rpc = useMemo(() => {
     const worklet = new Worklet()
+    workletRef.current = worklet
     worklet.start('/worker.bundle', bundle, [JSON.stringify(updaterConfig)])
 
     const client = new RPC(worklet.IPC, () => {})
@@ -504,6 +506,7 @@ export default function App() {
         return parsed && parsed.ok === true ? parsed.result : parsed
       },
       destroy() {
+        workletRef.current = null
         worklet.terminate()
       }
     }
@@ -673,6 +676,9 @@ export default function App() {
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState) => {
+      try {
+        workletRef.current?.update?.(nextState)
+      } catch {}
       if (nextState === 'active') void pruneMissingIndexedFiles('wakeup')
     })
     return () => sub.remove()
