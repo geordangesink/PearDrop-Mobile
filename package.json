@@ -1,7 +1,7 @@
 {
   "name": "pear-drops-mobile",
   "productName": "PearDrop",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "upgrade": "pear://ididi1cou1u7fcai161tc3ejggn1opm6ufcrzfz5dt8gymi1889y",
   "main": "index.ts",
   "scripts": {
