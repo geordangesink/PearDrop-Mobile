@@ -273,6 +273,7 @@ export default function App() {
   const previewTranslateY = useRef(new Animated.Value(0)).current
   const skeletonShimmer = useRef(new Animated.Value(0)).current
   const [hostingBusy, setHostingBusy] = useState(false)
+  const [hostSelectedPending, setHostSelectedPending] = useState(false)
   const [stoppingInvites, setStoppingInvites] = useState<Set<string>>(new Set())
   const [stoppingSelectedHosts, setStoppingSelectedHosts] = useState(false)
   const [rehostingHistoryKeys, setRehostingHistoryKeys] = useState<Set<string>>(new Set())
@@ -1019,7 +1020,8 @@ export default function App() {
   }
 
   const startHostNamePromptForSelected = () => {
-    if (hostingBusy || hostNameModalVisible) return
+    if (hostingBusy || hostSelectedPending || hostNameModalVisible) return
+    setHostSelectedPending(true)
     setPendingHostMode('selected')
     setHostNameDraft('Host Session')
     setHostPackagingMode('raw')
@@ -1375,6 +1377,7 @@ export default function App() {
       Alert.alert('Host failed', error?.message || String(error))
     } finally {
       setHostingBusy(false)
+      setHostSelectedPending(false)
       setTimeout(() => clearWorkerActivityBar('host'), 700)
       setPendingHostMode('')
     }
@@ -1383,6 +1386,7 @@ export default function App() {
   const dismissHostNameModal = () => {
     setHostNameModalVisible(false)
     setPendingHostMode('')
+    setHostSelectedPending(false)
   }
 
   const onDownload = async () => {
@@ -2059,7 +2063,7 @@ export default function App() {
             >
               <Text style={[styles.rowBtnText, themed.text]}>← Back</Text>
             </AppPressable>
-            <Text style={styles.hostDetailTitle}>Host session</Text>
+            <Text style={[styles.hostDetailTitle, themed.text]}>Host session</Text>
           </View>
           <View style={[styles.hostCard, themed.panel]}>
             <Text style={[styles.hostCardTitle, themed.text]}>
@@ -2145,13 +2149,14 @@ export default function App() {
                 const refPreviewPath = String(ref?.path || '').trim()
                 const showRefImage = refMime.startsWith('image/') && Boolean(refPreviewPath)
                 return (
-                  <View key={refId} style={styles.hostRefRow}>
-                    <AppPressable
-                      style={[styles.rowBtn, themed.panelSoft]}
-                      onPress={() => toggleHostDetailRefSelect(refId)}
-                    >
-                      <Text style={[styles.rowBtnText, themed.text]}>{selected ? '☑' : '☐'}</Text>
-                    </AppPressable>
+                  <View
+                    key={refId}
+                    style={[
+                      styles.hostRefRow,
+                      themed.panelSoft,
+                      selected && { borderColor: theme.accent }
+                    ]}
+                  >
                     <AppPressable
                       style={styles.previewBox}
                       onPress={() => void openHostSourcePreview(ref)}
@@ -2164,7 +2169,10 @@ export default function App() {
                         </Text>
                       )}
                     </AppPressable>
-                    <View style={styles.hostRefMeta}>
+                    <AppPressable
+                      onPress={() => toggleHostDetailRefSelect(refId)}
+                      style={styles.hostRefMetaTouch}
+                    >
                       <Text style={[styles.hostRefTitle, themed.text]} numberOfLines={1}>
                         {String(ref?.name || 'Source')}
                       </Text>
@@ -2174,7 +2182,7 @@ export default function App() {
                       <Text style={[styles.hostRefPath, themed.muted]}>
                         {formatBytes(Number(ref?.byteLength || 0))}
                       </Text>
-                    </View>
+                    </AppPressable>
                   </View>
                 )
               })
@@ -2560,10 +2568,6 @@ export default function App() {
   }
 
   const renderInviteList = () => {
-    const allSelected =
-      inviteEntries.length > 0 &&
-      inviteEntries.every((entry) => inviteSelected.has(String(entry.drivePath || entry.name)))
-
     return (
       <View style={styles.hostSection}>
         <View style={styles.hostDetailHead}>
@@ -2583,30 +2587,6 @@ export default function App() {
           </AppPressable>
           <Text style={styles.hostDetailTitle}>View drive</Text>
         </View>
-        <View style={[styles.bulkBar, themed.panel]}>
-          <AppPressable style={[styles.rowBtn, themed.panelSoft]} onPress={toggleInviteSelectAll}>
-            <Text style={[styles.rowBtnText, themed.text]}>{allSelected ? '☑' : '☐'}</Text>
-          </AppPressable>
-          <Text style={[styles.bulkText, themed.muted]}>
-            {
-              inviteEntries.filter((entry) =>
-                inviteSelected.has(String(entry.drivePath || entry.name))
-              ).length
-            }{' '}
-            selected
-          </Text>
-          <AppPressable
-            style={[styles.rowBtn, themed.panelSoft, inviteDownloadBusy && styles.rowBtnDisabled]}
-            onPress={() => void downloadInviteSelected()}
-            disabled={inviteDownloadBusy}
-          >
-            {inviteDownloadBusy ? (
-              <ActivityIndicator size='small' color={theme.accent} />
-            ) : (
-              <Text style={[styles.rowBtnText, themed.text]}>Download</Text>
-            )}
-          </AppPressable>
-        </View>
         {inviteEntries.map((entry, i) => {
           const key = String(entry.drivePath || entry.name)
           const selectedRow = inviteSelected.has(key)
@@ -2614,10 +2594,10 @@ export default function App() {
           const thumbLoading = invitePreviewLoading.has(key)
           const canPreview = isInviteImageEntry(entry)
           return (
-            <View key={`${key}:${i}`} style={[styles.fileRow, themed.panel]}>
-              <AppPressable onPress={() => toggleInviteSelect(entry)} style={styles.checkBtn}>
-                <Text style={styles.checkText}>{selectedRow ? '☑' : '☐'}</Text>
-              </AppPressable>
+            <View
+              key={`${key}:${i}`}
+              style={[styles.fileRow, themed.panel, selectedRow && { borderColor: theme.accent }]}
+            >
               <AppPressable
                 style={styles.previewBox}
                 onPress={() => void openInviteEntryPreview(entry)}
@@ -2657,12 +2637,12 @@ export default function App() {
                   </Text>
                 )}
               </AppPressable>
-              <View style={styles.fileMeta}>
+              <AppPressable onPress={() => toggleInviteSelect(entry)} style={styles.fileMetaTouch}>
                 <Text style={[styles.fileName, themed.text]}>{entry.name || `File ${i + 1}`}</Text>
                 <Text style={[styles.fileSub, themed.muted]}>
                   {formatBytes(Number(entry.byteLength || 0))}
                 </Text>
-              </View>
+              </AppPressable>
               <AppPressable
                 style={[styles.rowBtn, themed.panelSoft, inviteDownloadBusy && styles.rowBtnDisabled]}
                 onPress={async () => {
@@ -2700,10 +2680,10 @@ export default function App() {
       const coverArt = String(item.coverArtDataUrl || '').trim()
       const isVideo = resolvedMimeType.startsWith('video/')
       return (
-        <View key={item.id} style={[styles.fileRow, themed.panel]}>
-          <AppPressable onPress={() => toggleSelect(item.id)} style={styles.checkBtn}>
-            <Text style={styles.checkText}>{isSelected ? '☑' : '☐'}</Text>
-          </AppPressable>
+        <View
+          key={item.id}
+          style={[styles.fileRow, themed.panel, isSelected && { borderColor: theme.accent }]}
+        >
           <AppPressable
             style={styles.previewBox}
             onPress={() => {
@@ -2726,12 +2706,12 @@ export default function App() {
               </Text>
             )}
           </AppPressable>
-          <View style={styles.fileMeta}>
+          <AppPressable onPress={() => toggleSelect(item.id)} style={styles.fileMetaTouch}>
             <Text style={[styles.fileName, themed.text]}>{item.name}</Text>
             <Text style={[styles.fileSub, themed.muted]}>
               {formatBytes(item.byteLength)} • {formatDate(item.updatedAt)} • {item.source}
             </Text>
-          </View>
+          </AppPressable>
           <View style={styles.fileActions}>
             <AppPressable
               onPress={() => {
@@ -3022,13 +3002,13 @@ export default function App() {
                   style={[
                     styles.primaryBtn,
                     themed.accentBg,
-                    (hostingBusy || hostNameModalVisible || selected.size === 0) &&
+                    (hostingBusy || hostSelectedPending || hostNameModalVisible || selected.size === 0) &&
                       styles.rowBtnDisabled
                   ]}
                   onPress={startHostNamePromptForSelected}
-                  disabled={hostingBusy || hostNameModalVisible || selected.size === 0}
+                  disabled={hostingBusy || hostSelectedPending || hostNameModalVisible || selected.size === 0}
                 >
-                  {hostingBusy ? (
+                  {hostingBusy || hostSelectedPending ? (
                     <ActivityIndicator size='small' color='#fff' />
                   ) : (
                     <Text style={styles.primaryBtnText}>Host Selected</Text>
@@ -3071,6 +3051,19 @@ export default function App() {
                   <Text style={styles.primaryBtnText}>View Drive</Text>
                 )}
               </AppPressable>
+              {inviteMode ? (
+                <AppPressable
+                  style={[
+                    styles.secondaryBtn,
+                    themed.panelSoft,
+                    inviteDownloadBusy && styles.rowBtnDisabled
+                  ]}
+                  onPress={toggleInviteSelectAll}
+                  disabled={inviteDownloadBusy || !inviteEntries.length}
+                >
+                  <Text style={[styles.secondaryBtnText, themed.text]}>Select All</Text>
+                </AppPressable>
+              ) : null}
               {inviteMode ? (
                 <AppPressable
                   style={[
@@ -4335,9 +4328,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingVertical: 6
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderWidth: 1,
+    borderColor: '#d8dce3',
+    borderRadius: 10
   },
   hostRefMeta: {
+    flex: 1,
+    gap: 2
+  },
+  hostRefMetaTouch: {
     flex: 1,
     gap: 2
   },
@@ -4379,6 +4380,10 @@ const styles = StyleSheet.create({
     minHeight: 84
   },
   fileMeta: {
+    flex: 1,
+    gap: 4
+  },
+  fileMetaTouch: {
     flex: 1,
     gap: 4
   },
