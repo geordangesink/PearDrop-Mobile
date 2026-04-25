@@ -25,6 +25,7 @@ import {
 import { StatusBar } from 'expo-status-bar'
 import * as DocumentPicker from 'expo-document-picker'
 import * as FileSystem from 'expo-file-system/legacy'
+import * as ImagePicker from 'expo-image-picker'
 import * as MediaLibrary from 'expo-media-library'
 import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'
@@ -848,17 +849,85 @@ export default function App() {
     }
   }
 
-  const onUploadFolder = async () => {
-    Alert.alert(
-      'Add folder',
-      'Folder selection is not available in mobile yet. Please add file(s) for now.'
-    )
+  const onUploadPhotos = async () => {
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync()
+      if (!permission.granted) {
+        Alert.alert('Permission required', 'Allow photo library access to import photos.')
+        return
+      }
+
+      const pick = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        allowsMultipleSelection: true,
+        quality: 1
+      })
+
+      if (pick.canceled || !Array.isArray(pick.assets) || pick.assets.length === 0) return
+
+      upsertWorkerActivityBar('ingest', 'Loading photos...', 0, pick.assets.length)
+      setStatus(`Loading ${pick.assets.length} photo(s)...`)
+      setWorkerLogMessage('indexing selected photos')
+      const now = Date.now()
+      const payloadFiles: FileRecord[] = []
+      for (let i = 0; i < pick.assets.length; i++) {
+        const asset = pick.assets[i]
+        const fallbackName = `photo-${i + 1}.jpg`
+        const name = String(asset.fileName || fallbackName)
+        const mimeType = asset.mimeType || guessMime(name)
+        payloadFiles.push({
+          id: `local:${Date.now()}:${name}:${i}`,
+          name,
+          byteLength: Number(asset.fileSize || 0),
+          updatedAt: now,
+          source: 'local',
+          invite: '',
+          path: asset.uri,
+          mimeType
+        })
+        upsertWorkerActivityBar('ingest', 'Loading photos...', i + 1, pick.assets.length)
+        if ((i + 1) % 20 === 0) await sleep(0)
+      }
+
+      const existingKeys = new Set(
+        (Array.isArray(filesRef.current) ? filesRef.current : [])
+          .map((row) => localFileIdentityKey(row))
+          .filter(Boolean)
+      )
+      const newlyAddedIds = payloadFiles
+        .filter((row) => {
+          const key = localFileIdentityKey(row)
+          return key && !existingKeys.has(key)
+        })
+        .map((row) => String(row.id || ''))
+        .filter(Boolean)
+      let addedCount = 0
+      setFiles((prev) => {
+        const next = mergeUniqueLocalFiles(payloadFiles, prev)
+        addedCount = next.length - prev.length
+        return next
+      })
+      if (newlyAddedIds.length) {
+        setSelected((prev) => {
+          const next = new Set(prev)
+          for (const id of newlyAddedIds) next.add(id)
+          return next
+        })
+      }
+      setStatus(`Added ${addedCount} new photo(s). Select and tap Host Selected.`)
+      setWorkerLogMessage('photo indexing complete')
+    } catch (error: any) {
+      Alert.alert('Add photos failed', error?.message || String(error))
+    } finally {
+      clearWorkerActivityBar('ingest')
+    }
   }
 
   const onAddSource = () => {
     Alert.alert('Add source', 'Choose what to add.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Add folder', onPress: () => void onUploadFolder() },
+      { text: 'Add photo(s)', onPress: () => void onUploadPhotos() },
       { text: 'Add file(s)', onPress: () => void onUploadFiles() }
     ])
   }
@@ -2771,7 +2840,7 @@ export default function App() {
   const renderOptionsView = () => (
     <View style={styles.hostSection}>
       <View style={styles.hostDetailHead}>
-        <Text style={[styles.hostDetailTitle, themed.text]}>Options</Text>
+        <Text style={[styles.viewTitle, themed.text]}>Options</Text>
       </View>
 
       <View style={[styles.hostCard, themed.panel]}>
@@ -2819,44 +2888,46 @@ export default function App() {
         )}
       </View>
 
-      <View style={styles.mainTabsRow}>
-        <AppPressable
-          style={[
-            styles.mainTabBtn,
-            themed.panelSoft,
-            mainTab === 'upload' && styles.mainTabBtnActive
-          ]}
-          onPress={() => setMainTab('upload')}
-        >
-          <Text
+      {!optionsViewOpen ? (
+        <View style={styles.mainTabsRow}>
+          <AppPressable
             style={[
-              styles.mainTabBtnText,
-              mainTab === 'upload' && styles.mainTabBtnTextActive,
-              mainTab === 'upload' ? themed.accentText : themed.text
+              styles.mainTabBtn,
+              themed.panelSoft,
+              mainTab === 'upload' && styles.mainTabBtnActive
             ]}
+            onPress={() => setMainTab('upload')}
           >
-            Upload
-          </Text>
-        </AppPressable>
-        <AppPressable
-          style={[
-            styles.mainTabBtn,
-            themed.panelSoft,
-            mainTab === 'download' && styles.mainTabBtnActive
-          ]}
-          onPress={() => setMainTab('download')}
-        >
-          <Text
+            <Text
+              style={[
+                styles.mainTabBtnText,
+                mainTab === 'upload' && styles.mainTabBtnTextActive,
+                mainTab === 'upload' ? themed.accentText : themed.text
+              ]}
+            >
+              Upload
+            </Text>
+          </AppPressable>
+          <AppPressable
             style={[
-              styles.mainTabBtnText,
-              mainTab === 'download' && styles.mainTabBtnTextActive,
-              mainTab === 'download' ? themed.accentText : themed.text
+              styles.mainTabBtn,
+              themed.panelSoft,
+              mainTab === 'download' && styles.mainTabBtnActive
             ]}
+            onPress={() => setMainTab('download')}
           >
-            Download
-          </Text>
-        </AppPressable>
-      </View>
+            <Text
+              style={[
+                styles.mainTabBtnText,
+                mainTab === 'download' && styles.mainTabBtnTextActive,
+                mainTab === 'download' ? themed.accentText : themed.text
+              ]}
+            >
+              Download
+            </Text>
+          </AppPressable>
+        </View>
+      ) : null}
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {optionsViewOpen ? (
@@ -4422,6 +4493,12 @@ const styles = StyleSheet.create({
     color: '#6f6f6f',
     fontSize: 12,
     fontWeight: '600'
+  },
+  viewTitle: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#1f1f1f',
+    flex: 1
   },
   workerLog: {
     color: '#6f6f6f',
