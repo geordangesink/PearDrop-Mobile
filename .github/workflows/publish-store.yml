@@ -16,6 +16,16 @@ on:
         options:
           - production
           - preview
+      submit_ios:
+        description: Submit iOS
+        required: true
+        default: true
+        type: boolean
+      submit_android:
+        description: Submit Android
+        required: true
+        default: true
+        type: boolean
       ios_build_id:
         description: Optional explicit iOS EAS build ID
         required: false
@@ -40,6 +50,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       profile: ${{ steps.resolve.outputs.profile }}
+      submit_ios: ${{ steps.resolve.outputs.submit_ios }}
+      submit_android: ${{ steps.resolve.outputs.submit_android }}
       ios_build_id: ${{ steps.resolve.outputs.ios_build_id }}
       android_build_id: ${{ steps.resolve.outputs.android_build_id }}
     steps:
@@ -52,7 +64,7 @@ jobs:
           run_id: ${{ github.event.workflow_run.id }}
           name: mobile-ios-build-metadata
           path: _build-meta
-          if_no_artifact_found: fail
+          if_no_artifact_found: warn
 
       - name: Download Android metadata artifact (workflow_run)
         if: ${{ github.event_name == 'workflow_run' }}
@@ -61,7 +73,7 @@ jobs:
           run_id: ${{ github.event.workflow_run.id }}
           name: mobile-android-build-metadata
           path: _build-meta
-          if_no_artifact_found: fail
+          if_no_artifact_found: warn
 
       - name: Resolve IDs
         id: resolve
@@ -73,6 +85,9 @@ jobs:
             profile="production"
           fi
 
+          submit_ios="${{ github.event_name == 'workflow_dispatch' && inputs.submit_ios || 'true' }}"
+          submit_android="${{ github.event_name == 'workflow_dispatch' && inputs.submit_android || 'true' }}"
+
           ios_id="${{ inputs.ios_build_id }}"
           android_id="${{ inputs.android_build_id }}"
 
@@ -83,21 +98,33 @@ jobs:
             android_id="$(jq -r 'if type=="array" then .[0].id // empty else .id // empty end' _build-meta/android-build.json)"
           fi
 
-          if [ -z "$ios_id" ]; then
+          if [ "$submit_ios" = "true" ] && [ -z "$ios_id" ] && [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "No iOS build metadata found for this build workflow run; skipping iOS submit."
+            submit_ios="false"
+          fi
+          if [ "$submit_android" = "true" ] && [ -z "$android_id" ] && [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "No Android build metadata found for this build workflow run; skipping Android submit."
+            submit_android="false"
+          fi
+
+          if [ "$submit_ios" = "true" ] && [ -z "$ios_id" ]; then
             echo "Unable to resolve iOS build id. Provide ios_build_id (workflow_dispatch) or run publish from a successful build workflow."
             exit 1
           fi
-          if [ -z "$android_id" ]; then
+          if [ "$submit_android" = "true" ] && [ -z "$android_id" ]; then
             echo "Unable to resolve Android build id. Provide android_build_id (workflow_dispatch) or run publish from a successful build workflow."
             exit 1
           fi
 
           echo "profile=$profile" >> "$GITHUB_OUTPUT"
+          echo "submit_ios=$submit_ios" >> "$GITHUB_OUTPUT"
+          echo "submit_android=$submit_android" >> "$GITHUB_OUTPUT"
           echo "ios_build_id=$ios_id" >> "$GITHUB_OUTPUT"
           echo "android_build_id=$android_id" >> "$GITHUB_OUTPUT"
 
   submit-ios:
     name: Submit iOS (App Store Connect)
+    if: ${{ needs.resolve-build-ids.outputs.submit_ios == 'true' }}
     needs: [resolve-build-ids]
     runs-on: ubuntu-latest
     env:
@@ -168,6 +195,7 @@ jobs:
 
   submit-android:
     name: Submit Android (Play Console)
+    if: ${{ needs.resolve-build-ids.outputs.submit_android == 'true' }}
     needs: [resolve-build-ids]
     runs-on: ubuntu-latest
     env:

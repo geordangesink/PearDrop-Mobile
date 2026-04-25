@@ -11,6 +11,16 @@ on:
         options:
           - production
           - preview
+      build_ios:
+        description: Build iOS
+        required: true
+        default: true
+        type: boolean
+      build_android:
+        description: Build Android
+        required: true
+        default: true
+        type: boolean
   push:
     tags:
       - 'v*'
@@ -26,6 +36,7 @@ concurrency:
 jobs:
   build-ios:
     name: Build iOS (EAS)
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_ios }}
     runs-on: ubuntu-latest
     outputs:
       build_id: ${{ steps.capture.outputs.build_id }}
@@ -91,6 +102,7 @@ jobs:
 
   build-android:
     name: Build Android (EAS)
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_android }}
     runs-on: ubuntu-latest
     outputs:
       build_id: ${{ steps.capture.outputs.build_id }}
@@ -156,12 +168,22 @@ jobs:
 
   build-summary:
     name: Build Summary
+    if: ${{ always() }}
     needs: [build-ios, build-android]
     runs-on: ubuntu-latest
     steps:
       - name: Build IDs
         run: |
-          echo "iOS build id:     ${{ needs.build-ios.outputs.build_id }}"
-          echo "iOS version/build:${{ needs.build-ios.outputs.app_version }} (${{ needs.build-ios.outputs.build_number }})"
-          echo "Android build id: ${{ needs.build-android.outputs.build_id }}"
-          echo "Android version:  ${{ needs.build-android.outputs.app_version }} (code ${{ needs.build-android.outputs.version_code }})"
+          if [ "${{ needs.build-ios.result }}" = "success" ]; then
+            echo "iOS build id:     ${{ needs.build-ios.outputs.build_id }}"
+            echo "iOS version/build:${{ needs.build-ios.outputs.app_version }} (${{ needs.build-ios.outputs.build_number }})"
+          else
+            echo "iOS build:        ${{ needs.build-ios.result }}"
+          fi
+
+          if [ "${{ needs.build-android.result }}" = "success" ]; then
+            echo "Android build id: ${{ needs.build-android.outputs.build_id }}"
+            echo "Android version:  ${{ needs.build-android.outputs.app_version }} (code ${{ needs.build-android.outputs.version_code }})"
+          else
+            echo "Android build:    ${{ needs.build-android.result }}"
+          fi
