@@ -9,6 +9,7 @@ src/worker.bundle.js
 # distribution
 dist/
 ota/
+upgrade/
 
 # Expo
 .expo/
