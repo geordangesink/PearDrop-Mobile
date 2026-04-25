@@ -2691,9 +2691,14 @@ export default function App() {
 
     return visibleFiles.map((item) => {
       const isSelected = selected.has(item.id)
-      const isImage = String(item.mimeType || '').startsWith('image/') && item.dataBase64
+      const resolvedMimeType = String(item.mimeType || guessMime(item.name || ''))
+      const localPath = String(item.path || '')
+      const imageUri = item.dataBase64
+        ? `data:${resolvedMimeType || 'image/*'};base64,${item.dataBase64}`
+        : localPath
+      const isImage = resolvedMimeType.startsWith('image/') && Boolean(imageUri)
       const coverArt = String(item.coverArtDataUrl || '').trim()
-      const isVideo = String(item.mimeType || '').startsWith('video/')
+      const isVideo = resolvedMimeType.startsWith('video/')
       return (
         <View key={item.id} style={[styles.fileRow, themed.panel]}>
           <AppPressable onPress={() => toggleSelect(item.id)} style={styles.checkBtn}>
@@ -2702,15 +2707,17 @@ export default function App() {
           <AppPressable
             style={styles.previewBox}
             onPress={() => {
-              setPreviewFile(item)
+              setPreviewFile({
+                name: item.name,
+                mimeType: resolvedMimeType,
+                dataBase64: item.dataBase64,
+                uri: localPath
+              })
               previewTranslateY.setValue(0)
             }}
           >
             {isImage ? (
-              <Image
-                source={{ uri: `data:${item.mimeType};base64,${item.dataBase64}` }}
-                style={styles.previewImage}
-              />
+              <Image source={{ uri: imageUri }} style={styles.previewImage} />
             ) : coverArt ? (
               <Image source={{ uri: coverArt }} style={styles.previewImage} />
             ) : (
@@ -3120,7 +3127,7 @@ export default function App() {
               value={hostNameDraft}
               onChangeText={setHostNameDraft}
               placeholder='Host Session'
-              style={[styles.folderInput, themed.panelSoft]}
+              style={[styles.folderInput, themed.panelSoft, themed.text]}
             />
             <View style={styles.folderOptionsScroll}>
               <AppPressable
@@ -3134,7 +3141,8 @@ export default function App() {
                 <Text
                   style={[
                     styles.folderOptionText,
-                    hostPackagingMode === 'raw' && styles.mainTabBtnTextActive
+                    hostPackagingMode === 'raw' && styles.mainTabBtnTextActive,
+                    themed.text
                   ]}
                 >
                   Host mode: Raw files
@@ -3151,7 +3159,8 @@ export default function App() {
                 <Text
                   style={[
                     styles.folderOptionText,
-                    hostPackagingMode === 'zip' && styles.mainTabBtnTextActive
+                    hostPackagingMode === 'zip' && styles.mainTabBtnTextActive,
+                    themed.text
                   ]}
                 >
                   Host mode: Single ZIP package (default)
@@ -3741,6 +3750,7 @@ function guessMime(name: string) {
   const ext = fileExt(name).toLowerCase()
   if (ext === 'png') return 'image/png'
   if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg'
+  if (ext === 'heic' || ext === 'heif') return 'image/heic'
   if (ext === 'gif') return 'image/gif'
   if (ext === 'webp') return 'image/webp'
   if (ext === 'mp3') return 'audio/mpeg'
