@@ -71,6 +71,7 @@ type FileRecord = {
   source: 'upload' | 'download' | 'local'
   invite: string
   path?: string
+  sourceAssetId?: string
   drivePath?: string
   mimeType?: string
   dataBase64?: string
@@ -163,6 +164,7 @@ const DEFAULT_DEV_RELAY = 'wss://pear-drops.up.railway.app'
 const DEFAULT_PROD_RELAY = 'wss://pear-drops.up.railway.app'
 const PUBLIC_SITE_ORIGIN = 'https://peardrop.online'
 const ANDROID_DOWNLOADS_FILE_URI = 'file:///storage/emulated/0/Download'
+const IOS_HOST_STAGING_DIR = `${FileSystem.cacheDirectory || FileSystem.documentDirectory || ''}host-staging`
 const MOBILE_WORKER_INIT_TIMEOUT_MS = 45000
 let androidDownloadsDirUriCache = ''
 const ACTION_ICON_PLAY = '▶'
@@ -266,6 +268,7 @@ export default function App() {
   const [inviteDownloadBusy, setInviteDownloadBusy] = useState(false)
   const [inviteSource, setInviteSource] = useState('')
   const [inviteEntries, setInviteEntries] = useState<InviteEntry[]>([])
+  const [inviteRenderCount, setInviteRenderCount] = useState(80)
   const [inviteSelected, setInviteSelected] = useState<Set<string>>(new Set())
   const [invitePreviewThumbs, setInvitePreviewThumbs] = useState<Record<string, string>>({})
   const [invitePreviewLoading, setInvitePreviewLoading] = useState<Set<string>>(new Set())
@@ -286,6 +289,13 @@ export default function App() {
   const activeHostsRef = useRef<ActiveHost[]>([])
   const workletRef = useRef<any>(null)
   const rpcRef = useRef<any>(null)
+  const appStateRef = useRef<string>(String(AppState.currentState || 'active'))
+  const inviteDownloadBusyRef = useRef(false)
+  const pendingIosSavePromptRef = useRef<{
+    artifacts: Array<{ path: string; name: string; mimeType: string }>
+    includePhotos: boolean
+  } | null>(null)
+  const pendingIosSavePromptRunningRef = useRef(false)
   const activityTimingRef = useRef<Map<string, { startedAt: number; etaMs: number }>>(new Map())
   const invitePreviewLoadRef = useRef<Set<string>>(new Set())
   const webRtcShareHostsRef = useRef<Map<string, any>>(new Map())
@@ -368,7 +378,8 @@ export default function App() {
       const key = String(nativeInvite || '').trim()
       if (!key) return ''
       const cached = webRtcShareHostsRef.current.get(key)
-      const isAlive = cached && typeof cached.isAlive === 'function' ? Boolean(cached.isAlive()) : false
+      const isAlive =
+        cached && typeof cached.isAlive === 'function' ? Boolean(cached.isAlive()) : false
       if (isAlive && hasWebRtcSignal(String(cached.webLink || ''))) {
         return String(cached.webLink || '')
       }
@@ -599,6 +610,10 @@ export default function App() {
   }, [files])
 
   useEffect(() => {
+    inviteDownloadBusyRef.current = inviteDownloadBusy
+  }, [inviteDownloadBusy])
+
+  useEffect(() => {
     const loop = Animated.loop(
       Animated.timing(skeletonShimmer, {
         toValue: 1,
@@ -650,25 +665,47 @@ export default function App() {
       hostPackagingMode
     }
     void savePersistedMetadata(payload)
-  }, [
-    starredHosts,
-    hostHistory,
-    hostHistoryRemoved,
-    themeMode,
-    metadataLoaded,
-    hostPackagingMode
-  ])
+  }, [starredHosts, hostHistory, hostHistoryRemoved, themeMode, metadataLoaded, hostPackagingMode])
 
   useEffect(() => {
     if (!inviteMode || !inviteSource || !inviteEntries.length) return
-    const imageEntries = inviteEntries.filter(isInviteImageEntry).slice(0, 18)
-    for (const entry of imageEntries) {
-      const key = inviteEntryKey(entry)
-      if (!key) continue
-      if (invitePreviewThumbs[key] || invitePreviewLoadRef.current.has(key)) continue
-      void ensureInvitePreview(entry, false)
+    if (inviteDownloadBusy) return
+    const imageEntries = inviteEntries
+      .filter(isInviteImageEntry)
+      .slice(0, Math.min(inviteRenderCount, 6))
+    let cancelled = false
+    void (async () => {
+      for (const entry of imageEntries) {
+        if (cancelled || inviteDownloadBusy) break
+        const key = inviteEntryKey(entry)
+        if (!key) continue
+        if (invitePreviewThumbs[key] || invitePreviewLoadRef.current.has(key)) continue
+        await sleep(25)
+        if (cancelled || inviteDownloadBusy) break
+        await ensureInvitePreview(entry, false)
+      }
+    })()
+    return () => {
+      cancelled = true
     }
-  }, [inviteMode, inviteSource, inviteEntries, invitePreviewThumbs])
+  }, [
+    inviteMode,
+    inviteSource,
+    inviteEntries,
+    invitePreviewThumbs,
+    inviteRenderCount,
+    inviteDownloadBusy
+  ])
+
+  useEffect(() => {
+    if (!inviteMode || inviteDownloadBusy) return
+    const total = inviteEntries.length
+    if (inviteRenderCount >= total) return
+    const timer = setTimeout(() => {
+      setInviteRenderCount((prev) => Math.min(total, prev + 80))
+    }, 90)
+    return () => clearTimeout(timer)
+  }, [inviteMode, inviteDownloadBusy, inviteEntries.length, inviteRenderCount])
 
   useEffect(() => {
     if (!metadataLoaded) return
@@ -676,11 +713,83 @@ export default function App() {
   }, [metadataLoaded])
 
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (nextState) => {
+    const flushPendingIosSavePrompt = async () => {
+      if (Platform.OS !== 'ios') return
+      if (appStateRef.current !== 'active') return
+      if (pendingIosSavePromptRunningRef.current) return
+      const pending = pendingIosSavePromptRef.current
+      if (!pending || !pending.artifacts.length) return
+      pendingIosSavePromptRunningRef.current = true
+      pendingIosSavePromptRef.current = null
       try {
-        workletRef.current?.update?.(nextState)
-      } catch {}
-      if (nextState === 'active') void pruneMissingIndexedFiles('wakeup')
+        Alert.alert('Download finished', 'Choose where to save downloaded files.')
+        const destination = await promptIosDownloadDestination(pending.includePhotos)
+        if (!destination) {
+          setStatus('Save cancelled.')
+          return
+        }
+        if (destination === 'photos') {
+          const savedCount = await saveArtifactsToIosPhotos(pending.artifacts)
+          setStatus(
+            savedCount > 0
+              ? `Saved ${savedCount} file(s) to Photos`
+              : 'No compatible media files to save to Photos.'
+          )
+          return
+        }
+        try {
+          upsertWorkerActivityBar(
+            'ios-export',
+            'Preparing zip for Files app...',
+            0,
+            Math.max(1, pending.artifacts.length + 1),
+            {
+              subtitle: 'Preparing files...',
+              displayMode: 'count',
+              active: true
+            }
+          )
+          await shareArtifactsToIosFiles(pending.artifacts, (done, total, subtitle) => {
+            upsertWorkerActivityBar('ios-export', 'Preparing zip for Files app...', done, total, {
+              subtitle,
+              displayMode: 'count',
+              active: done < total
+            })
+          })
+        } finally {
+          clearWorkerActivityBar('ios-export')
+        }
+        setStatus(
+          pending.artifacts.length > 1
+            ? `Prepared ${pending.artifacts.length} files for Files app`
+            : 'Prepared file for Files app'
+        )
+      } catch (error: any) {
+        setWorkerLogMessage(`ios save prompt failed - ${error?.message || String(error)}`)
+      } finally {
+        pendingIosSavePromptRunningRef.current = false
+      }
+    }
+
+    const sub = AppState.addEventListener('change', (nextState) => {
+      const stateText = String(nextState || '').trim() || 'active'
+      appStateRef.current = stateText
+      const hasActiveHosting = (activeHostsRef.current || []).length > 0
+      const hasActiveDownload = inviteDownloadBusyRef.current
+      const keepWorkerAlive = stateText !== 'active' && (hasActiveHosting || hasActiveDownload)
+      if (!keepWorkerAlive) {
+        try {
+          workletRef.current?.update?.(nextState)
+        } catch {}
+      } else {
+        setWorkerLogMessage(
+          '[lifecycle] keeping worker unsuspended in background during active hosting/download'
+        )
+      }
+      if (stateText === 'active') {
+        void pruneMissingIndexedFiles('wakeup')
+        void flushPendingIosSavePrompt()
+      }
     })
     return () => sub.remove()
   }, [])
@@ -856,16 +965,16 @@ export default function App() {
     }
   }
 
-  const onUploadPhotos = async () => {
+  const onUploadMedia = async () => {
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync()
       if (!permission.granted) {
-        Alert.alert('Permission required', 'Allow photo library access to import photos.')
+        Alert.alert('Permission required', 'Allow photo library access to import media.')
         return
       }
 
       const pick = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
+        mediaTypes: ['images', 'videos'],
         allowsEditing: false,
         allowsMultipleSelection: true,
         quality: 1
@@ -873,14 +982,14 @@ export default function App() {
 
       if (pick.canceled || !Array.isArray(pick.assets) || pick.assets.length === 0) return
 
-      upsertWorkerActivityBar('ingest', 'Loading photos...', 0, pick.assets.length)
-      setStatus(`Loading ${pick.assets.length} photo(s)...`)
-      setWorkerLogMessage('indexing selected photos')
+      upsertWorkerActivityBar('ingest', 'Loading media...', 0, pick.assets.length)
+      setStatus(`Loading ${pick.assets.length} media file(s)...`)
+      setWorkerLogMessage('indexing selected media')
       const now = Date.now()
       const payloadFiles: FileRecord[] = []
       for (let i = 0; i < pick.assets.length; i++) {
         const asset = pick.assets[i]
-        const fallbackName = `photo-${i + 1}.jpg`
+        const fallbackName = `media-${i + 1}`
         const name = String(asset.fileName || fallbackName)
         const mimeType = asset.mimeType || guessMime(name)
         payloadFiles.push({
@@ -890,10 +999,11 @@ export default function App() {
           updatedAt: now,
           source: 'local',
           invite: '',
-          path: asset.uri,
+          path: String(asset.uri || ''),
+          sourceAssetId: String(asset.assetId || ''),
           mimeType
         })
-        upsertWorkerActivityBar('ingest', 'Loading photos...', i + 1, pick.assets.length)
+        upsertWorkerActivityBar('ingest', 'Loading media...', i + 1, pick.assets.length)
         if ((i + 1) % 20 === 0) await sleep(0)
       }
 
@@ -922,10 +1032,10 @@ export default function App() {
           return next
         })
       }
-      setStatus(`Added ${addedCount} new photo(s). Select and tap Host Selected.`)
-      setWorkerLogMessage('photo indexing complete')
+      setStatus(`Added ${addedCount} new media file(s). Select and tap Host Selected.`)
+      setWorkerLogMessage('media indexing complete')
     } catch (error: any) {
-      Alert.alert('Add photos failed', error?.message || String(error))
+      Alert.alert('Add media failed', error?.message || String(error))
     } finally {
       clearWorkerActivityBar('ingest')
     }
@@ -934,8 +1044,8 @@ export default function App() {
   const onAddSource = () => {
     Alert.alert('Add source', 'Choose what to add.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Add photo(s)', onPress: () => void onUploadPhotos() },
-      { text: 'Add file(s)', onPress: () => void onUploadFiles() }
+      { text: 'Media', onPress: () => void onUploadMedia() },
+      { text: 'File(s)', onPress: () => void onUploadFiles() }
     ])
   }
 
@@ -948,20 +1058,40 @@ export default function App() {
       return
     }
 
-    const rawPayload = (
-      await Promise.all(picked.map((item) => toUploadPayload(item, rpc, setFiles)))
-    ).filter(Boolean)
-
-    if (!rawPayload.length) {
-      Alert.alert('Not hostable', 'Selected files are not available locally for hosting.')
-      return
-    }
-
     try {
+      const selectedTotalBytes = picked.reduce(
+        (sum, item) => sum + Math.max(0, Number(item?.byteLength || 0)),
+        0
+      )
+      const shouldForceRawForLargeZip = packaging === 'zip' && selectedTotalBytes > 80 * 1024 * 1024
+      const effectivePackaging: HostPackaging = shouldForceRawForLargeZip ? 'raw' : packaging
+      const rawPayload = (
+        await Promise.all(
+          picked.map((item) =>
+            toUploadPayload(item, rpc, setFiles, {
+              preferPath: effectivePackaging === 'raw'
+            })
+          )
+        )
+      ).filter(Boolean)
+
+      if (!rawPayload.length) {
+        Alert.alert('Not hostable', 'Selected files are not available locally for hosting.')
+        return
+      }
+
       let payload = rawPayload
       setHostingBusy(true)
       upsertWorkerActivityBar('host', 'Preparing selected files...', 1, 5)
-      if (packaging === 'zip') {
+      if (shouldForceRawForLargeZip) {
+        setStatus(
+          `Large selection (${formatBytes(selectedTotalBytes)}): using raw hosting for reliability.`
+        )
+        setWorkerLogMessage(
+          `zip packaging bypassed for large selection (${formatBytes(selectedTotalBytes)})`
+        )
+      }
+      if (effectivePackaging === 'zip') {
         setStatus(`Preparing zip package from ${rawPayload.length} file(s)...`)
         setWorkerLogMessage('building zip package')
         payload = [buildZipPayload(rawPayload, sessionName)]
@@ -1401,6 +1531,7 @@ export default function App() {
       setInviteLoading(true)
       setInviteMode(false)
       setInviteEntries([])
+      setInviteRenderCount(80)
       setInviteSelected(new Set())
       setInvitePreviewThumbs({})
       setInvitePreviewFull({})
@@ -1412,6 +1543,7 @@ export default function App() {
       const entries = Array.isArray(manifest.files) ? manifest.files : []
       setInviteSource(invite)
       setInviteEntries(entries)
+      setInviteRenderCount(Math.min(80, entries.length))
       setInviteSelected(
         new Set(entries.map((item: InviteEntry) => String(item.drivePath || item.name)))
       )
@@ -1631,54 +1763,55 @@ export default function App() {
       Alert.alert('Select files', 'Select one or more drive files first.')
       return
     }
-    const shouldDownload = true
-    let iosDestination: 'files' | 'photos' = 'files'
-    if (Platform.OS === 'ios') {
-      const allMedia = picked.every((entry) =>
-        isMediaMimeType(entry.mimeType || guessMime(entry.name))
-      )
-      const destination = await promptIosDownloadDestination(allMedia)
-      if (!destination) return
-      iosDestination = destination
-    }
-    setStatus(`Downloading ${picked.length} file(s)...`)
-    setWorkerLogMessage('downloading selected invite files')
-    const knownTotalBytes = picked.reduce(
-      (sum, entry) => sum + Math.max(0, Number(entry?.byteLength || 0)),
-      0
-    )
-    const useByteProgress = knownTotalBytes > 0
-    const totalForProgress = useByteProgress ? knownTotalBytes : picked.length
-    let downloadedBytes = 0
-    upsertWorkerActivityBar('download', 'Downloading selected files...', 0, totalForProgress, {
-      subtitle: 'Current file: preparing...',
-      displayMode: useByteProgress ? 'bytes' : 'count'
-    })
-    const defaultDir = `${FileSystem.documentDirectory || ''}downloads`
-    let androidDownloadsDirUri = ''
-    let androidDownloadMode: 'direct' | 'saf' = 'direct'
-    const iosDownloadedArtifacts: Array<{ path: string; name: string; mimeType: string }> = []
-    if (shouldDownload) {
-      if (Platform.OS === 'android') {
-        const canDirectWrite = await canWriteAndroidPublicDownloads()
-        if (!canDirectWrite) {
-          androidDownloadMode = 'saf'
-          androidDownloadsDirUri = await resolveAndroidDownloadsDirUri()
-          if (!androidDownloadsDirUri) {
-            Alert.alert(
-              'Downloads permission needed',
-              'Grant access to your Downloads folder to save files there.'
-            )
-            return
-          }
-        }
-      } else {
-        await FileSystem.makeDirectoryAsync(defaultDir, { intermediates: true })
-      }
-    }
-
+    setInviteDownloadBusy(true)
+    setStatus('Preparing download...')
+    setWorkerLogMessage('preparing selected invite files')
     try {
-      setInviteDownloadBusy(true)
+      const shouldDownload = true
+      const allMediaForIosPhotos =
+        Platform.OS === 'ios' &&
+        picked.every((entry) =>
+          isIosPhotosCompatibleMedia(
+            entry.mimeType || guessMime(entry.name),
+            String(entry.name || '')
+          )
+        )
+      setStatus(`Downloading ${picked.length} file(s)...`)
+      setWorkerLogMessage('downloading selected invite files')
+      const knownTotalBytes = picked.reduce(
+        (sum, entry) => sum + Math.max(0, Number(entry?.byteLength || 0)),
+        0
+      )
+      const useByteProgress = knownTotalBytes > 0
+      const totalForProgress = useByteProgress ? knownTotalBytes : picked.length
+      let downloadedBytes = 0
+      upsertWorkerActivityBar('download', 'Downloading selected files...', 0, totalForProgress, {
+        subtitle: 'Current file: preparing...',
+        displayMode: useByteProgress ? 'bytes' : 'count'
+      })
+      const defaultDir = `${FileSystem.documentDirectory || ''}downloads`
+      let androidDownloadsDirUri = ''
+      let androidDownloadMode: 'direct' | 'saf' = 'direct'
+      const iosDownloadedArtifacts: Array<{ path: string; name: string; mimeType: string }> = []
+      if (shouldDownload) {
+        if (Platform.OS === 'android') {
+          const canDirectWrite = await canWriteAndroidPublicDownloads()
+          if (!canDirectWrite) {
+            androidDownloadMode = 'saf'
+            androidDownloadsDirUri = await resolveAndroidDownloadsDirUri()
+            if (!androidDownloadsDirUri) {
+              Alert.alert(
+                'Downloads permission needed',
+                'Grant access to your Downloads folder to save files there.'
+              )
+              return
+            }
+          }
+        } else {
+          await FileSystem.makeDirectoryAsync(defaultDir, { intermediates: true })
+        }
+      }
+
       for (let i = 0; i < picked.length; i++) {
         const entry = picked[i]
         upsertWorkerActivityBar(
@@ -1816,41 +1949,61 @@ export default function App() {
 
       await refresh()
       if (Platform.OS === 'ios' && shouldDownload) {
-        if (iosDestination === 'photos') {
-          const savedCount = await saveArtifactsToIosPhotos(iosDownloadedArtifacts)
-          setStatus(
-            savedCount > 0
-              ? `Saved ${savedCount} file(s) to Photos`
-              : 'No compatible media files to save to Photos.'
-          )
-        } else if (iosDestination === 'files') {
-          try {
-            upsertWorkerActivityBar(
-              'ios-export',
-              'Preparing zip for Files app...',
-              0,
-              Math.max(1, iosDownloadedArtifacts.length + 1),
-              {
-                subtitle: 'Preparing files...',
-                displayMode: 'count',
-                active: true
-              }
-            )
-            await shareArtifactsToIosFiles(iosDownloadedArtifacts, (done, total, subtitle) => {
-              upsertWorkerActivityBar('ios-export', 'Preparing zip for Files app...', done, total, {
-                subtitle,
-                displayMode: 'count',
-                active: done < total
-              })
-            })
-          } finally {
-            clearWorkerActivityBar('ios-export')
+        if (appStateRef.current !== 'active') {
+          pendingIosSavePromptRef.current = {
+            artifacts: iosDownloadedArtifacts,
+            includePhotos: Boolean(allMediaForIosPhotos)
           }
-          setStatus(
-            iosDownloadedArtifacts.length > 1
-              ? `Prepared ${iosDownloadedArtifacts.length} files for Files app`
-              : 'Prepared file for Files app'
-          )
+          setStatus('Download finished in background. Reopen app to choose save destination.')
+          setWorkerLogMessage('download finished in background; save prompt queued')
+        } else {
+          const destination = await promptIosDownloadDestination(Boolean(allMediaForIosPhotos))
+          if (!destination) {
+            setStatus('Save cancelled.')
+            return
+          }
+          if (destination === 'photos') {
+            const savedCount = await saveArtifactsToIosPhotos(iosDownloadedArtifacts)
+            setStatus(
+              savedCount > 0
+                ? `Saved ${savedCount} file(s) to Photos`
+                : 'No compatible media files to save to Photos.'
+            )
+          } else {
+            try {
+              upsertWorkerActivityBar(
+                'ios-export',
+                'Preparing zip for Files app...',
+                0,
+                Math.max(1, iosDownloadedArtifacts.length + 1),
+                {
+                  subtitle: 'Preparing files...',
+                  displayMode: 'count',
+                  active: true
+                }
+              )
+              await shareArtifactsToIosFiles(iosDownloadedArtifacts, (done, total, subtitle) => {
+                upsertWorkerActivityBar(
+                  'ios-export',
+                  'Preparing zip for Files app...',
+                  done,
+                  total,
+                  {
+                    subtitle,
+                    displayMode: 'count',
+                    active: done < total
+                  }
+                )
+              })
+            } finally {
+              clearWorkerActivityBar('ios-export')
+            }
+            setStatus(
+              iosDownloadedArtifacts.length > 1
+                ? `Prepared ${iosDownloadedArtifacts.length} files for Files app`
+                : 'Prepared file for Files app'
+            )
+          }
         }
       } else {
         setStatus(
@@ -2076,7 +2229,10 @@ export default function App() {
               {host.fileCount ? `• ${host.fileCount} files` : ''}
             </Text>
             <View style={styles.hostCardActions}>
-              <AppPressable style={[styles.rowBtn, themed.panelSoft]} onPress={() => toggleStarHostInvite(host.invite)}>
+              <AppPressable
+                style={[styles.rowBtn, themed.panelSoft]}
+                onPress={() => toggleStarHostInvite(host.invite)}
+              >
                 <Text style={[styles.rowBtnText, themed.text]}>
                   {starredHosts.has(String(host.invite || '')) ? '★' : '☆'}
                 </Text>
@@ -2104,7 +2260,9 @@ export default function App() {
                 {isStopping ? (
                   <ActivityIndicator size='small' color={theme.danger} />
                 ) : (
-                  <Text style={[styles.rowBtnText, themed.text, styles.rowDeleteText]}>{ACTION_ICON_STOP}</Text>
+                  <Text style={[styles.rowBtnText, themed.text, styles.rowDeleteText]}>
+                    {ACTION_ICON_STOP}
+                  </Text>
                 )}
               </AppPressable>
             </View>
@@ -2114,7 +2272,10 @@ export default function App() {
               <Text style={[styles.bulkText, themed.muted]}>
                 {hostDetailSourceRefs.length} source{hostDetailSourceRefs.length === 1 ? '' : 's'}
               </Text>
-              <AppPressable style={[styles.rowBtn, themed.panelSoft]} onPress={() => void addHostDetailFiles()}>
+              <AppPressable
+                style={[styles.rowBtn, themed.panelSoft]}
+                onPress={() => void addHostDetailFiles()}
+              >
                 <Text style={[styles.rowBtnText, themed.text]}>＋ File</Text>
               </AppPressable>
               <AppPressable
@@ -2125,7 +2286,11 @@ export default function App() {
                 {renderDesktopTrashIcon()}
               </AppPressable>
               <AppPressable
-                style={[styles.rowBtn, themed.panelSoft, hostDetailApplying && styles.rowBtnDisabled]}
+                style={[
+                  styles.rowBtn,
+                  themed.panelSoft,
+                  hostDetailApplying && styles.rowBtnDisabled
+                ]}
                 onPress={() => void applyHostDetailChanges()}
                 disabled={hostDetailApplying}
               >
@@ -2216,14 +2381,20 @@ export default function App() {
           <Text style={[styles.hostSectionTitle, themed.text]}>Active hosts (online)</Text>
           <View style={styles.hostSectionActions}>
             <Text style={[styles.hostSectionMeta, themed.muted]}>{selectedActiveHosts.size}</Text>
-            <AppPressable style={[styles.rowBtn, themed.panelSoft]} onPress={toggleSelectAllActiveHosts}>
+            <AppPressable
+              style={[styles.rowBtn, themed.panelSoft]}
+              onPress={toggleSelectAllActiveHosts}
+            >
               <Text style={[styles.rowBtnText, themed.text]}>
                 {activeHosts.length > 0 && selectedActiveHosts.size === activeHosts.length
                   ? 'Deselect All'
                   : 'Select All'}
               </Text>
             </AppPressable>
-            <AppPressable style={[styles.rowBtn, themed.panelSoft]} onPress={starSelectedActiveHosts}>
+            <AppPressable
+              style={[styles.rowBtn, themed.panelSoft]}
+              onPress={starSelectedActiveHosts}
+            >
               <Text style={[styles.rowBtnText, themed.text]}>
                 {selectedActiveHosts.size > 0 &&
                 Array.from(selectedActiveHosts).every((invite) => starredHosts.has(invite))
@@ -2232,14 +2403,20 @@ export default function App() {
               </Text>
             </AppPressable>
             <AppPressable
-              style={[styles.rowBtn, themed.panelSoft, stoppingSelectedHosts && styles.rowBtnDisabled]}
+              style={[
+                styles.rowBtn,
+                themed.panelSoft,
+                stoppingSelectedHosts && styles.rowBtnDisabled
+              ]}
               onPress={() => void stopSelectedActiveHosts()}
               disabled={stoppingSelectedHosts}
             >
               {stoppingSelectedHosts ? (
                 <ActivityIndicator size='small' color={theme.danger} />
               ) : (
-                <Text style={[styles.rowBtnText, themed.text, styles.rowDeleteText]}>{ACTION_ICON_STOP}</Text>
+                <Text style={[styles.rowBtnText, themed.text, styles.rowDeleteText]}>
+                  {ACTION_ICON_STOP}
+                </Text>
               )}
             </AppPressable>
           </View>
@@ -2316,7 +2493,11 @@ export default function App() {
                           </Text>
                         </AppPressable>
                         <AppPressable
-                          style={[styles.rowBtn, themed.panelSoft, isStopping && styles.rowBtnDisabled]}
+                          style={[
+                            styles.rowBtn,
+                            themed.panelSoft,
+                            isStopping && styles.rowBtnDisabled
+                          ]}
                           onPress={() => stopActiveHost(host.invite)}
                           disabled={isStopping}
                         >
@@ -2398,7 +2579,11 @@ export default function App() {
                     </AppPressable>
                   ) : canRehost ? (
                     <AppPressable
-                      style={[styles.rowBtn, themed.panelSoft, isRehosting && styles.rowBtnDisabled]}
+                      style={[
+                        styles.rowBtn,
+                        themed.panelSoft,
+                        isRehosting && styles.rowBtnDisabled
+                      ]}
                       onPress={() => void restartHostFromHistory(historyItem)}
                       disabled={isRehosting}
                     >
@@ -2424,7 +2609,10 @@ export default function App() {
                       {copyFeedbackKey === `starred:${invite}` ? '✓' : ACTION_ICON_COPY}
                     </Text>
                   </AppPressable>
-                  <AppPressable style={[styles.rowBtn, themed.panelSoft]} onPress={() => toggleStarHostInvite(invite)}>
+                  <AppPressable
+                    style={[styles.rowBtn, themed.panelSoft]}
+                    onPress={() => toggleStarHostInvite(invite)}
+                  >
                     <Text style={[styles.rowBtnText, themed.text]}>Unstar</Text>
                   </AppPressable>
                 </View>
@@ -2509,7 +2697,10 @@ export default function App() {
                   {item.fileCount ? `• ${item.fileCount} files` : ''}
                 </Text>
                 <View style={styles.hostCardActions}>
-                  <AppPressable style={[styles.rowBtn, themed.panelSoft]} onPress={() => toggleSelectHostHistory(item)}>
+                  <AppPressable
+                    style={[styles.rowBtn, themed.panelSoft]}
+                    onPress={() => toggleSelectHostHistory(item)}
+                  >
                     <Text style={[styles.rowBtnText, themed.text]}>
                       {selectedHostHistory.has(historyKey) ? '☑' : '☐'}
                     </Text>
@@ -2576,6 +2767,7 @@ export default function App() {
             onPress={() => {
               setInviteMode(false)
               setInviteEntries([])
+              setInviteRenderCount(80)
               setInviteSelected(new Set())
               setInvitePreviewThumbs({})
               setInvitePreviewFull({})
@@ -2587,7 +2779,7 @@ export default function App() {
           </AppPressable>
           <Text style={styles.hostDetailTitle}>View drive</Text>
         </View>
-        {inviteEntries.map((entry, i) => {
+        {inviteEntries.slice(0, inviteRenderCount).map((entry, i) => {
           const key = String(entry.drivePath || entry.name)
           const selectedRow = inviteSelected.has(key)
           const thumbData = String(invitePreviewThumbs[key] || '')
@@ -2644,7 +2836,11 @@ export default function App() {
                 </Text>
               </AppPressable>
               <AppPressable
-                style={[styles.rowBtn, themed.panelSoft, inviteDownloadBusy && styles.rowBtnDisabled]}
+                style={[
+                  styles.rowBtn,
+                  themed.panelSoft,
+                  inviteDownloadBusy && styles.rowBtnDisabled
+                ]}
                 onPress={async () => {
                   setInviteSelected(new Set([key]))
                   await downloadInviteSelected()
@@ -2660,6 +2856,25 @@ export default function App() {
             </View>
           )
         })}
+        {inviteRenderCount < inviteEntries.length ? (
+          <View style={styles.inviteLoadMoreWrap}>
+            <AppPressable
+              style={[
+                styles.secondaryBtn,
+                themed.panelSoft,
+                inviteDownloadBusy && styles.rowBtnDisabled
+              ]}
+              onPress={() =>
+                setInviteRenderCount((prev) => Math.min(inviteEntries.length, prev + 120))
+              }
+              disabled={inviteDownloadBusy}
+            >
+              <Text style={[styles.secondaryBtnText, themed.text]}>
+                Load more ({inviteRenderCount}/{inviteEntries.length})
+              </Text>
+            </AppPressable>
+          </View>
+        ) : null}
       </View>
     )
   }
@@ -2871,7 +3086,10 @@ export default function App() {
 
       <View style={[styles.topHeader, themed.container]}>
         {optionsViewOpen ? (
-          <AppPressable style={[styles.rowBtn, themed.panelSoft]} onPress={() => setOptionsViewOpen(false)}>
+          <AppPressable
+            style={[styles.rowBtn, themed.panelSoft]}
+            onPress={() => setOptionsViewOpen(false)}
+          >
             <Text style={[styles.rowBtnText, themed.text]}>← Back</Text>
           </AppPressable>
         ) : (
@@ -2980,7 +3198,12 @@ export default function App() {
                   onPress={toggleSelectAllLocalSources}
                   disabled={!visibleFiles.length}
                 >
-                  <Text style={[styles.secondaryBtnText, themed.text]}>Select All</Text>
+                  <Text style={[styles.secondaryBtnText, themed.text]}>
+                    {visibleFiles.length > 0 &&
+                    visibleFiles.every((item) => selected.has(String(item.id || '')))
+                      ? 'Deselect All'
+                      : 'Select All'}
+                  </Text>
                 </AppPressable>
                 <AppPressable
                   style={[styles.rowBtn, themed.panelSoft, !selected.size && styles.rowBtnDisabled]}
@@ -3002,11 +3225,19 @@ export default function App() {
                   style={[
                     styles.primaryBtn,
                     themed.accentBg,
-                    (hostingBusy || hostSelectedPending || hostNameModalVisible || selected.size === 0) &&
+                    (hostingBusy ||
+                      hostSelectedPending ||
+                      hostNameModalVisible ||
+                      selected.size === 0) &&
                       styles.rowBtnDisabled
                   ]}
                   onPress={startHostNamePromptForSelected}
-                  disabled={hostingBusy || hostSelectedPending || hostNameModalVisible || selected.size === 0}
+                  disabled={
+                    hostingBusy ||
+                    hostSelectedPending ||
+                    hostNameModalVisible ||
+                    selected.size === 0
+                  }
                 >
                   {hostingBusy || hostSelectedPending ? (
                     <ActivityIndicator size='small' color='#fff' />
@@ -3061,7 +3292,14 @@ export default function App() {
                   onPress={toggleInviteSelectAll}
                   disabled={inviteDownloadBusy || !inviteEntries.length}
                 >
-                  <Text style={[styles.secondaryBtnText, themed.text]}>Select All</Text>
+                  <Text style={[styles.secondaryBtnText, themed.text]}>
+                    {inviteEntries.length > 0 &&
+                    inviteEntries.every((entry) =>
+                      inviteSelected.has(String(entry.drivePath || entry.name))
+                    )
+                      ? 'Deselect All'
+                      : 'Select All'}
+                  </Text>
                 </AppPressable>
               ) : null}
               {inviteMode ? (
@@ -3374,9 +3612,11 @@ function historyEntryKey(entry: any): string {
 async function toUploadPayload(
   item: FileRecord,
   rpc: { request: (command: number, payload?: any) => Promise<any> },
-  setFiles: (updater: (prev: FileRecord[]) => FileRecord[]) => void
+  setFiles: (updater: (prev: FileRecord[]) => FileRecord[]) => void,
+  options: { preferPath?: boolean } = {}
 ) {
   const mimeType = item.mimeType || guessMime(item.name)
+  const preferPath = options.preferPath === true
 
   if (typeof item.dataBase64 === 'string') {
     return {
@@ -3387,9 +3627,36 @@ async function toUploadPayload(
   }
 
   const localPath = String(item.path || '').trim()
+  const normalizedLocalPath = normalizeFileUri(localPath)
   if (localPath) {
+    if (preferPath) {
+      try {
+        const info = await FileSystem.getInfoAsync(normalizedLocalPath || localPath)
+        if (info?.exists) {
+          const stagingPath = await materializeHostPathIfNeeded(
+            normalizedLocalPath || localPath,
+            item.name
+          )
+          return {
+            name: item.name,
+            mimeType,
+            path: toHostReadablePath(stagingPath || normalizedLocalPath || localPath)
+          }
+        }
+      } catch {}
+      const fallbackPath = await resolveMediaAssetPath(item)
+      if (fallbackPath) {
+        const stagingPath = await materializeHostPathIfNeeded(fallbackPath, item.name)
+        return {
+          name: item.name,
+          mimeType,
+          path: toHostReadablePath(stagingPath || fallbackPath)
+        }
+      }
+      return null
+    }
     try {
-      const dataBase64 = await FileSystem.readAsStringAsync(localPath, {
+      const dataBase64 = await FileSystem.readAsStringAsync(normalizedLocalPath || localPath, {
         encoding: FileSystem.EncodingType.Base64
       })
       if (dataBase64) {
@@ -3410,6 +3677,18 @@ async function toUploadPayload(
         }
       }
     } catch {}
+  }
+
+  if (preferPath) {
+    const fallbackPath = await resolveMediaAssetPath(item)
+    if (fallbackPath) {
+      const stagingPath = await materializeHostPathIfNeeded(fallbackPath, item.name)
+      return {
+        name: item.name,
+        mimeType,
+        path: toHostReadablePath(stagingPath || fallbackPath)
+      }
+    }
   }
 
   if (!item.invite) return null
@@ -3529,16 +3808,35 @@ function promptIosDownloadDestination(includePhotos: boolean): Promise<'files' |
   })
 }
 
-function isMediaMimeType(mimeType: string): boolean {
+function isIosPhotosCompatibleMedia(mimeType: string, name = ''): boolean {
   const value = String(mimeType || '').toLowerCase()
-  return value.startsWith('image/') || value.startsWith('video/')
+  const ext = fileExt(String(name || '')).toLowerCase()
+  if (['jpg', 'jpeg', 'png', 'heic', 'heif', 'gif', 'webp'].includes(ext)) return true
+  if (['mp4', 'mov', 'm4v'].includes(ext)) return true
+  if (value.startsWith('image/')) {
+    if (value.includes('svg') || value.includes('tiff')) return false
+    return (
+      value.includes('jpeg') ||
+      value.includes('png') ||
+      value.includes('heic') ||
+      value.includes('heif') ||
+      value.includes('gif') ||
+      value.includes('webp')
+    )
+  }
+  if (value.startsWith('video/')) {
+    return value.includes('mp4') || value.includes('quicktime')
+  }
+  return false
 }
 
 async function saveArtifactsToIosPhotos(
   artifacts: Array<{ path: string; mimeType: string }>
 ): Promise<number> {
   if (!artifacts.length) return 0
-  const media = artifacts.filter((item) => isMediaMimeType(item.mimeType))
+  const media = artifacts.filter((item) =>
+    isIosPhotosCompatibleMedia(item.mimeType, String(item.path || ''))
+  )
   if (!media.length) return 0
   const permission = await MediaLibrary.requestPermissionsAsync()
   if (!permission.granted) {
@@ -3629,6 +3927,60 @@ async function requestInit(rpc: { request: (command: number, payload?: any) => P
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function resolveMediaAssetPath(item: FileRecord): Promise<string> {
+  const assetId = String(item?.sourceAssetId || '').trim()
+  if (!assetId) return ''
+  try {
+    const info = await MediaLibrary.getAssetInfoAsync(assetId, {
+      shouldDownloadFromNetwork: true
+    })
+    const localUri = String(info?.localUri || info?.uri || '').trim()
+    if (!localUri) return ''
+    if (!localUri.startsWith('file://')) return ''
+    const fileInfo = await FileSystem.getInfoAsync(localUri)
+    if (!fileInfo?.exists) return ''
+    return localUri
+  } catch {
+    return ''
+  }
+}
+
+function normalizeFileUri(value: string): string {
+  const source = String(value || '').trim()
+  if (!source) return ''
+  if (source.startsWith('file://')) return source
+  if (source.startsWith('/')) return `file://${source}`
+  return source
+}
+
+function toHostReadablePath(value: string): string {
+  const normalized = normalizeFileUri(value)
+  if (normalized.startsWith('file://'))
+    return decodeURIComponent(normalized.slice('file://'.length))
+  return String(value || '').trim()
+}
+
+async function materializeHostPathIfNeeded(localPath: string, fileName = ''): Promise<string> {
+  const source = normalizeFileUri(localPath)
+  if (!source) return ''
+  if (Platform.OS !== 'ios') return ''
+  if (!source.startsWith('file://')) return ''
+  if (!source.includes('/Library/Caches/ImagePicker/')) return ''
+  try {
+    await FileSystem.makeDirectoryAsync(IOS_HOST_STAGING_DIR, { intermediates: true }).catch(
+      () => {}
+    )
+    const safe = sanitizeFileName(String(fileName || source.split('/').pop() || 'media'))
+    const ext = fileExt(safe).toLowerCase()
+    const stem = ext ? safe.slice(0, -(ext.length + 1)) : safe
+    const out = `${IOS_HOST_STAGING_DIR}/${stem || 'media'}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}${ext ? `.${ext}` : ''}`
+    await FileSystem.copyAsync({ from: source, to: out })
+    return out
+  } catch {
+    return ''
+  }
 }
 
 function redactInviteText(value: string): string {
@@ -3734,9 +4086,13 @@ function formatEta(ms: number) {
 }
 
 function fileExt(name: string) {
-  const idx = String(name || '').lastIndexOf('.')
+  const raw = String(name || '')
+    .trim()
+    .split('?')[0]
+    .split('#')[0]
+  const idx = raw.lastIndexOf('.')
   if (idx < 0) return ''
-  return String(name).slice(idx + 1)
+  return raw.slice(idx + 1).trim()
 }
 
 function guessMime(name: string) {
@@ -4431,6 +4787,10 @@ const styles = StyleSheet.create({
   fileActions: {
     flexDirection: 'row',
     gap: 8
+  },
+  inviteLoadMoreWrap: {
+    marginTop: 8,
+    alignItems: 'flex-start'
   },
   rowBtn: {
     backgroundColor: '#efefef',

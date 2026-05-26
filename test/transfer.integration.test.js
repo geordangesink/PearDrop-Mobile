@@ -103,3 +103,87 @@ test(
     assert.equal(file, 'cross backend mobile payload')
   }
 )
+
+test('mobile failed upload does not leave stale active host state', async (t) => {
+  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'peardrops-mobile-host-fail-'))
+  const backend = new TransferBackend({ baseDir })
+
+  t.after(async () => {
+    await backend.close()
+    await fs.rm(baseDir, { recursive: true, force: true })
+  })
+
+  await backend.ready()
+
+  await assert.rejects(
+    backend.createUpload({
+      files: [
+        {
+          name: 'missing-mobile.txt',
+          mimeType: 'text/plain',
+          path: path.join(baseDir, 'does-not-exist.txt')
+        }
+      ]
+    }),
+    /Source file does not exist|ENOENT/
+  )
+
+  const hosts = await backend.listActiveHosts()
+  assert.equal(hosts.hosts.length, 0)
+})
+
+test('mobile host manifest is readable immediately after host start and restart', async (t) => {
+  const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'peardrops-mobile-manifest-ready-'))
+  const backend = new TransferBackend({ baseDir })
+
+  t.after(async () => {
+    await backend.close()
+    await fs.rm(baseDir, { recursive: true, force: true })
+  })
+
+  await backend.ready()
+
+  const payload = b4a.from('mobile-manifest-readiness').toString('base64')
+  const upload = await backend.createUpload({
+    files: [
+      {
+        name: 'mobile-ready.txt',
+        mimeType: 'text/plain',
+        dataBase64: payload
+      }
+    ],
+    sessionName: 'MobileReadyCheck'
+  })
+
+  await assertManifestReady(backend, upload.invite)
+
+  const stopped = await backend.stopHost({ invite: upload.invite })
+  assert.equal(stopped.stopped, true)
+
+  const restarted = await backend.startHostFromTransfer({
+    transferId: upload.transfer.id,
+    sessionName: 'MobileReadyCheck-Restart'
+  })
+  await assertManifestReady(backend, restarted.invite)
+})
+
+async function assertManifestReady(backend, invite, retries = 6, retryDelayMs = 200) {
+  let lastError = null
+  for (let i = 0; i < retries; i++) {
+    try {
+      const manifest = await backend.getManifest({ invite })
+      assert.ok(manifest)
+      assert.ok(Array.isArray(manifest.files))
+      return
+    } catch (error) {
+      lastError = error
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await delayMs(retryDelayMs)
+  }
+  throw lastError || new Error('Manifest did not become readable in time')
+}
+
+function delayMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
