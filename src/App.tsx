@@ -52,10 +52,9 @@ const RpcCommand = {
   START_HOST_FROM_TRANSFER: 9,
   READ_ENTRY_CHUNK: 10,
   UPDATE_ACTIVE_HOST: 11,
-  START_WEBRTC_SIGNAL_HOST: 12,
-  NEXT_WEBRTC_SIGNAL_EVENT: 13,
-  SEND_WEBRTC_SIGNAL_EVENT: 14,
-  STOP_WEBRTC_SIGNAL_HOST: 15
+  LIST_HOST_PEER_ACTIVITY: 12,
+  REPORT_HOST_PEER_EVENT: 13,
+  SET_PEER_PROFILE: 14
 } as const
 
 type ThemeMode = 'system' | 'dark' | 'light'
@@ -195,6 +194,8 @@ type PersistedMetadata = {
   hostHistoryRemoved?: string[]
   themeMode?: ThemeMode
   hostPackagingMode?: HostPackaging
+  peerName?: string
+  onboardingDone?: boolean
 }
 
 const envRelay =
@@ -284,6 +285,10 @@ export default function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>('system')
   const [optionsViewOpen, setOptionsViewOpen] = useState(false)
   const [copyFeedbackKey, setCopyFeedbackKey] = useState('')
+  const [peerName, setPeerName] = useState('')
+  const [onboardingDone, setOnboardingDone] = useState(false)
+  const [hostPeerRows, setHostPeerRows] = useState<any[]>([])
+  const [, setHostPeerLastEventId] = useState(0)
   const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const filesRef = useRef<FileRecord[]>([])
   const activeHostsRef = useRef<ActiveHost[]>([])
@@ -326,6 +331,15 @@ export default function App() {
   const setWorkerLogMessage = (message: string) => {
     const text = redactInviteText(String(message || '').trim())
     setWorkerLog(`Worker log: ${text || 'waiting for events.'}`)
+  }
+
+  const formatPeerLabel = (name: string, hex4: string) => {
+    const safeName = String(name || '').trim() || 'Unknown'
+    const safeHex =
+      String(hex4 || '')
+        .trim()
+        .slice(0, 4) || '----'
+    return `${safeName} (${safeHex})`
   }
 
   const flashCopyFeedback = (key: string) => {
@@ -649,6 +663,8 @@ export default function App() {
       ) {
         setThemeMode(stored.themeMode)
       }
+      setPeerName(String(stored.peerName || ''))
+      setOnboardingDone(Boolean(stored.onboardingDone))
       setHostPackagingMode(stored.hostPackagingMode === 'raw' ? 'raw' : 'zip')
       setMetadataLoaded(true)
     })()
@@ -662,10 +678,29 @@ export default function App() {
       hostHistory: hostHistory.slice(0, 300),
       hostHistoryRemoved: Array.from(hostHistoryRemoved).slice(0, 600),
       themeMode,
-      hostPackagingMode
+      hostPackagingMode,
+      peerName,
+      onboardingDone
     }
     void savePersistedMetadata(payload)
-  }, [starredHosts, hostHistory, hostHistoryRemoved, themeMode, metadataLoaded, hostPackagingMode])
+  }, [
+    starredHosts,
+    hostHistory,
+    hostHistoryRemoved,
+    themeMode,
+    metadataLoaded,
+    hostPackagingMode,
+    peerName,
+    onboardingDone
+  ])
+
+  useEffect(() => {
+    const name = String(peerName || '').trim()
+    if (!name || !onboardingDone) return
+    void rpc
+      .request(RpcCommand.SET_PEER_PROFILE, { name })
+      .catch(() => {})
+  }, [rpc, peerName, onboardingDone])
 
   useEffect(() => {
     if (!inviteMode || !inviteSource || !inviteEntries.length) return
@@ -892,6 +927,57 @@ export default function App() {
     const timer = setInterval(() => {
       void tick()
     }, 4000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [rpc])
+
+  useEffect(() => {
+    let cancelled = false
+    const tick = async () => {
+      if (cancelled) return
+      try {
+        const response = await rpc.request(RpcCommand.LIST_HOST_PEER_ACTIVITY, {})
+        if (cancelled) return
+        const peers = Array.isArray(response?.peers) ? response.peers : []
+        const events = Array.isArray(response?.events) ? response.events : []
+        setHostPeerRows(peers)
+        setHostPeerLastEventId((prev) => {
+          let next = prev
+          for (const event of events) {
+            const id = Number(event?.eventId || 0)
+            if (!id || id <= prev) continue
+            next = Math.max(next, id)
+            const type = String(event?.type || '').toLowerCase()
+            if (!['joined', 'started', 'downloading', 'aborted', 'completed'].includes(type)) {
+              continue
+            }
+            const label = formatPeerLabel(
+              String(event?.peerName || ''),
+              String(event?.peerHex4 || '')
+            )
+            const session = String(event?.sessionName || 'Host Session')
+            const message =
+              type === 'joined'
+                ? `Peer ${label} joined ${session}`
+                : type === 'downloading'
+                  ? `Peer ${label} is downloading ${session}`
+                : type === 'started'
+                  ? `Peer ${label} started downloading ${session}`
+                : type === 'aborted'
+                  ? `Peer ${label} aborted downloading ${session}`
+                  : `Peer ${label} downloaded ${session}`
+            setWorkerLogMessage(message)
+          }
+          return next
+        })
+      } catch {}
+    }
+    void tick()
+    const timer = setInterval(() => {
+      void tick()
+    }, 1300)
     return () => {
       cancelled = true
       clearInterval(timer)
@@ -1154,7 +1240,6 @@ export default function App() {
     setHostSelectedPending(true)
     setPendingHostMode('selected')
     setHostNameDraft('Host Session')
-    setHostPackagingMode('raw')
     setHostNameModalVisible(true)
   }
 
@@ -1766,6 +1851,7 @@ export default function App() {
     setInviteDownloadBusy(true)
     setStatus('Preparing download...')
     setWorkerLogMessage('preparing selected invite files')
+    const normalizedPeerName = String(peerName || '').trim()
     try {
       const shouldDownload = true
       const allMediaForIosPhotos =
@@ -1810,6 +1896,17 @@ export default function App() {
         } else {
           await FileSystem.makeDirectoryAsync(defaultDir, { intermediates: true })
         }
+      }
+
+      if (normalizedPeerName) {
+        void rpc
+          .request(RpcCommand.REPORT_HOST_PEER_EVENT, {
+            invite: inviteSource,
+            peerName: normalizedPeerName,
+            type: 'downloading',
+            progress: 0
+          })
+          .catch(() => {})
       }
 
       for (let i = 0; i < picked.length; i++) {
@@ -1885,6 +1982,16 @@ export default function App() {
             }
             fileDone += chunkBytes
             downloadedBytes += chunkBytes
+            if (normalizedPeerName && knownTotalBytes > 0) {
+              void rpc
+                .request(RpcCommand.REPORT_HOST_PEER_EVENT, {
+                  invite: inviteSource,
+                  peerName: normalizedPeerName,
+                  type: 'downloading',
+                  progress: Math.max(0, Math.min(1, downloadedBytes / knownTotalBytes))
+                })
+                .catch(() => {})
+            }
             upsertWorkerActivityBar(
               'download',
               'Downloading selected files...',
@@ -1945,6 +2052,17 @@ export default function App() {
             displayMode: useByteProgress ? 'bytes' : 'count'
           }
         )
+      }
+
+      if (normalizedPeerName) {
+        void rpc
+          .request(RpcCommand.REPORT_HOST_PEER_EVENT, {
+            invite: inviteSource,
+            peerName: normalizedPeerName,
+            type: 'completed',
+            progress: 1
+          })
+          .catch(() => {})
       }
 
       await refresh()
@@ -2013,6 +2131,18 @@ export default function App() {
         )
       }
       setWorkerLogMessage('download completed')
+    } catch (error: any) {
+      if (normalizedPeerName) {
+        void rpc
+          .request(RpcCommand.REPORT_HOST_PEER_EVENT, {
+            invite: inviteSource,
+            peerName: normalizedPeerName,
+            type: 'aborted'
+          })
+          .catch(() => {})
+      }
+      setWorkerLogMessage(`download failed - ${error?.message || String(error)}`)
+      Alert.alert('Download failed', error?.message || String(error))
     } finally {
       setInviteDownloadBusy(false)
       clearWorkerActivityBar('download')
@@ -2377,6 +2507,50 @@ export default function App() {
 
     return (
       <View style={styles.hostSection}>
+        <View style={[styles.hostCard, themed.panel]}>
+          <View style={styles.hostSectionHead}>
+            <Text style={[styles.hostSectionTitle, themed.text]}>Joining peers</Text>
+            <Text style={[styles.hostSectionMeta, themed.muted]}>{hostPeerRows.length}</Text>
+          </View>
+          {hostPeerRows.length ? (
+            hostPeerRows.slice(0, 8).map((row) => {
+              const progress = Math.max(0, Math.min(100, Math.round(Number(row?.progress || 0) * 100)))
+              const statusText = String(row?.status || '').toLowerCase()
+              const isComplete = statusText === 'completed'
+              const isJoined = statusText === 'joined'
+              const isDownloading = statusText === 'downloading'
+              return (
+                <View key={String(row?.id || Math.random())} style={styles.peerRow}>
+                  <View style={styles.peerRowMain}>
+                    <Text style={[styles.fileName, themed.text]}>
+                      {formatPeerLabel(String(row?.peerName || ''), String(row?.peerHex4 || ''))}
+                    </Text>
+                    <Text style={[styles.fileMeta, themed.muted]}>
+                      {String(row?.sessionName || 'Host Session')}
+                    </Text>
+                    {!isJoined ? (
+                      <View style={styles.progressTrack}>
+                        <View style={[styles.progressFill, { width: `${progress}%` }]} />
+                      </View>
+                    ) : null}
+                  </View>
+                  <Text style={[styles.fileMeta, isComplete ? themed.accentText : themed.muted]}>
+                    {isJoined
+                      ? 'Joined'
+                      : isComplete
+                        ? 'Downloaded'
+                        : isDownloading
+                          ? 'Downloading'
+                          : `${progress}%`}
+                  </Text>
+                </View>
+              )
+            })
+          ) : (
+            <Text style={[styles.fileMeta, themed.muted]}>No joining peers yet.</Text>
+          )}
+        </View>
+
         <View style={styles.hostSectionHead}>
           <Text style={[styles.hostSectionTitle, themed.text]}>Active hosts (online)</Text>
           <View style={styles.hostSectionActions}>
@@ -3080,6 +3254,80 @@ export default function App() {
     </View>
   )
 
+  if (!metadataLoaded) {
+    return (
+      <SafeAreaView style={[styles.container, themed.container]}>
+        <StatusBar style={isDark ? 'light' : 'dark'} />
+        <View style={styles.onboardingShell}>
+          <View style={[styles.onboardingCard, themed.panel]}>
+            <Text style={[styles.onboardingTitle, themed.text]}>Loading PearDrop…</Text>
+            <Text style={[styles.onboardingCopy, themed.muted]}>
+              Checking your saved setup.
+            </Text>
+            <View style={styles.onboardingSpinnerRow}>
+              <ActivityIndicator size='small' color={theme.accent} />
+            </View>
+          </View>
+        </View>
+      </SafeAreaView>
+    )
+  }
+
+  if (!onboardingDone) {
+    return (
+      <SafeAreaView style={[styles.container, themed.container]}>
+        <StatusBar style={isDark ? 'light' : 'dark'} />
+        <View style={styles.onboardingShell}>
+          <View style={[styles.onboardingCard, themed.panel]}>
+            <Text style={[styles.onboardingTitle, themed.text]}>Welcome to PearDrop</Text>
+            <Text style={[styles.onboardingCopy, themed.muted]}>
+              Choose your theme and set your peer name.
+            </Text>
+            <View style={styles.onboardingThemeRow}>
+              {(['system', 'dark', 'light'] as ThemeMode[]).map((mode) => (
+                <AppPressable
+                  key={mode}
+                  style={[
+                    styles.onboardingThemeBtn,
+                    themed.panelSoft,
+                    mode === themeMode && styles.mainTabBtnActive
+                  ]}
+                  onPress={() => setThemeMode(mode)}
+                >
+                  <Text style={[styles.mainTabBtnText, mode === themeMode && themed.accentText]}>
+                    {mode[0].toUpperCase() + mode.slice(1)}
+                  </Text>
+                </AppPressable>
+              ))}
+            </View>
+            <TextInput
+              value={peerName}
+              onChangeText={setPeerName}
+              placeholder='Enter your name'
+              placeholderTextColor={theme.inputPlaceholder}
+              style={[styles.onboardingInput, themed.panelSoft, themed.text]}
+            />
+            <AppPressable
+              style={[
+                styles.primaryBtn,
+                themed.accentBg,
+                styles.onboardingContinueBtn,
+                !String(peerName || '').trim() && styles.rowBtnDisabled
+              ]}
+              onPress={() => {
+                if (!String(peerName || '').trim()) return
+                setOnboardingDone(true)
+              }}
+              disabled={!String(peerName || '').trim()}
+            >
+              <Text style={styles.primaryBtnText}>Continue</Text>
+            </AppPressable>
+          </View>
+        </View>
+      </SafeAreaView>
+    )
+  }
+
   return (
     <SafeAreaView style={[styles.container, themed.container]}>
       <StatusBar style={isDark ? 'light' : 'dark'} />
@@ -3365,24 +3613,6 @@ export default function App() {
                 style={[
                   styles.folderOptionBtn,
                   themed.panelSoft,
-                  hostPackagingMode === 'raw' && themed.accentBg
-                ]}
-                onPress={() => setHostPackagingMode('raw')}
-              >
-                <Text
-                  style={[
-                    styles.folderOptionText,
-                    hostPackagingMode === 'raw' && styles.mainTabBtnTextActive,
-                    themed.text
-                  ]}
-                >
-                  Host mode: Raw files
-                </Text>
-              </AppPressable>
-              <AppPressable
-                style={[
-                  styles.folderOptionBtn,
-                  themed.panelSoft,
                   hostPackagingMode === 'zip' && themed.accentBg
                 ]}
                 onPress={() => setHostPackagingMode('zip')}
@@ -3395,6 +3625,24 @@ export default function App() {
                   ]}
                 >
                   Host mode: Single ZIP package (default)
+                </Text>
+              </AppPressable>
+              <AppPressable
+                style={[
+                  styles.folderOptionBtn,
+                  themed.panelSoft,
+                  hostPackagingMode === 'raw' && themed.accentBg
+                ]}
+                onPress={() => setHostPackagingMode('raw')}
+              >
+                <Text
+                  style={[
+                    styles.folderOptionText,
+                    hostPackagingMode === 'raw' && styles.mainTabBtnTextActive,
+                    themed.text
+                  ]}
+                >
+                  Host mode: Raw files
                 </Text>
               </AppPressable>
             </View>
@@ -3530,7 +3778,9 @@ async function loadPersistedMetadata(): Promise<PersistedMetadata | null> {
         parsed.themeMode === 'dark' || parsed.themeMode === 'light' || parsed.themeMode === 'system'
           ? parsed.themeMode
           : 'system',
-      hostPackagingMode: parsed.hostPackagingMode === 'raw' ? 'raw' : 'zip'
+      hostPackagingMode: parsed.hostPackagingMode === 'raw' ? 'raw' : 'zip',
+      peerName: String(parsed.peerName || ''),
+      onboardingDone: Boolean(parsed.onboardingDone)
     }
   } catch {
     return null
@@ -3957,8 +4207,9 @@ function normalizeFileUri(value: string): string {
 
 function toHostReadablePath(value: string): string {
   const normalized = normalizeFileUri(value)
-  if (normalized.startsWith('file://'))
+  if (normalized.startsWith('file://')) {
     return decodeURIComponent(normalized.slice('file://'.length))
+  }
   return String(value || '').trim()
 }
 
@@ -5122,5 +5373,81 @@ const styles = StyleSheet.create({
   previewFallbackText: {
     color: '#b7bdc9',
     lineHeight: 20
+  },
+  panelTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    marginBottom: 10
+  },
+  joiningPeersPanel: {
+    marginBottom: 8
+  },
+  peerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingVertical: 6
+  },
+  peerRowMain: {
+    flex: 1,
+    minWidth: 0
+  },
+  progressTrack: {
+    marginTop: 6,
+    height: 7,
+    borderRadius: 999,
+    overflow: 'hidden',
+    backgroundColor: '#dcdfe4'
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#7dc994'
+  },
+  onboardingShell: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 16
+  },
+  onboardingCard: {
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 16
+  },
+  onboardingTitle: {
+    fontSize: 24,
+    fontWeight: '700',
+    marginBottom: 6
+  },
+  onboardingCopy: {
+    fontSize: 15,
+    lineHeight: 22,
+    marginBottom: 12
+  },
+  onboardingThemeRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12
+  },
+  onboardingThemeBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#d8d8d8',
+    borderRadius: 12,
+    paddingVertical: 10,
+    alignItems: 'center'
+  },
+  onboardingInput: {
+    borderWidth: 1,
+    borderColor: '#d8d8d8',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10
+  },
+  onboardingContinueBtn: {
+    marginTop: 14
+  },
+  onboardingSpinnerRow: {
+    marginTop: 8
   }
 })

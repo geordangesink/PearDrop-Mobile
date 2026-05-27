@@ -363,6 +363,39 @@ function isBenignConnectionError(error) {
 }
 
 function bindDataChannel(channel, { invite, rpc }) {
+  const peerName = { value: '' }
+  const emitState = { lastType: '', lastProgress: -1, lastAt: 0 }
+  const reportPeer = (type, progress = undefined) => {
+    const now = Date.now()
+    const normalizedType = String(type || '').trim().toLowerCase()
+    const normalizedProgress = Number.isFinite(Number(progress))
+      ? Math.max(0, Math.min(1, Number(progress)))
+      : -1
+    const sameType = emitState.lastType === normalizedType
+    const sameProgress =
+      normalizedProgress < 0 ||
+      emitState.lastProgress < 0 ||
+      Math.abs(emitState.lastProgress - normalizedProgress) < 0.03
+    const tooSoon = now - emitState.lastAt < 240
+    if (normalizedType === 'downloading' && sameType && sameProgress && tooSoon) {
+      return
+    }
+    emitState.lastType = normalizedType
+    emitState.lastProgress = normalizedProgress
+    emitState.lastAt = now
+    void rpc
+      .request(13, {
+        invite,
+        peerName: String(peerName.value || '').trim() || 'Web',
+        type: normalizedType || type,
+        progress: normalizedProgress >= 0 ? normalizedProgress : undefined
+      })
+      .catch(() => {})
+  }
+  reportPeer('joined', 0)
+  channel.onclose = () => {
+    reportPeer('aborted')
+  }
   channel.onmessage = async (event) => {
     let request = null
     try {
@@ -378,14 +411,19 @@ function bindDataChannel(channel, { invite, rpc }) {
     }
 
     try {
+      if (request?.peerName) {
+        peerName.value = String(request.peerName || '').trim()
+      }
       if (request.type === 'manifest') {
         const manifest = await rpc.request(3, { invite })
+        reportPeer('joined', 0)
         reply({ ok: true, manifest })
         return
       }
 
       if (request.type === 'file') {
         const entry = await rpc.request(6, { invite, drivePath: request.path })
+        reportPeer('joined', 0)
         reply({ ok: true, dataBase64: entry.dataBase64 })
         return
       }
@@ -403,6 +441,27 @@ function bindDataChannel(channel, { invite, rpc }) {
           byteLength: Number(entry?.byteLength || 0),
           dataBase64: entry?.dataBase64 || ''
         })
+        const fileSize = Math.max(0, Number(request.fileSize || 0))
+        const offset = Math.max(0, Number(request.offset || 0))
+        const chunkLen = Math.max(0, Number(entry?.byteLength || 0))
+        if (fileSize > 0) {
+          const progress = Math.max(0, Math.min(1, (offset + chunkLen) / fileSize))
+          reportPeer('downloading', progress)
+        } else {
+          reportPeer('joined', 0)
+        }
+        return
+      }
+
+      if (request.type === 'complete') {
+        reportPeer('completed', 1)
+        reply({ ok: true })
+        return
+      }
+
+      if (request.type === 'abort') {
+        reportPeer('aborted')
+        reply({ ok: true })
         return
       }
 
