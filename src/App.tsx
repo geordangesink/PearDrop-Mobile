@@ -29,6 +29,7 @@ import * as ImagePicker from 'expo-image-picker'
 import * as MediaLibrary from 'expo-media-library'
 import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'
+import * as Notifications from 'expo-notifications'
 import RPC from 'bare-rpc'
 import b4a from 'b4a'
 import { zipSync } from 'fflate'
@@ -38,6 +39,14 @@ import bundle from './worker.bundle.js'
 import { extractInviteUrl, extractShareInviteUrl } from './lib/invite'
 // @ts-ignore
 import { createWebRtcHost } from './lib/webrtc-host'
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+    shouldShowAlert: true
+  })
+})
 
 const RpcCommand = {
   INIT: 0,
@@ -90,6 +99,7 @@ type ActiveHost = {
   webSwarmLink?: string
   sessionName?: string
   sessionLabel?: string
+  hostMode?: HostPackaging
   createdAt?: number
   fileCount?: number
   totalBytes?: number
@@ -301,6 +311,8 @@ export default function App() {
     includePhotos: boolean
   } | null>(null)
   const pendingIosSavePromptRunningRef = useRef(false)
+  const notificationsEnabledRef = useRef(false)
+  const peerNotifyStateRef = useRef<Map<string, string>>(new Map())
   const activityTimingRef = useRef<Map<string, { startedAt: number; etaMs: number }>>(new Map())
   const invitePreviewLoadRef = useRef<Set<string>>(new Set())
   const webRtcShareHostsRef = useRef<Map<string, any>>(new Map())
@@ -327,6 +339,16 @@ export default function App() {
     }),
     [theme]
   )
+  const notifyPeerEvent = useCallback(async (title: string, body: string, dedupeKey: string) => {
+    if (!notificationsEnabledRef.current) return
+    if (!dedupeKey) return
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: { title, body },
+        trigger: null
+      })
+    } catch {}
+  }, [])
 
   const setWorkerLogMessage = (message: string) => {
     const text = redactInviteText(String(message || '').trim())
@@ -916,6 +938,24 @@ export default function App() {
   }
 
   useEffect(() => {
+    void (async () => {
+      try {
+        const perms = await Notifications.getPermissionsAsync()
+        let granted = perms.granted || perms.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL
+        if (!granted) {
+          const requested = await Notifications.requestPermissionsAsync()
+          granted =
+            requested.granted ||
+            requested.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL
+        }
+        notificationsEnabledRef.current = Boolean(granted)
+      } catch {
+        notificationsEnabledRef.current = false
+      }
+    })()
+  }, [])
+
+  useEffect(() => {
     let cancelled = false
     const tick = async () => {
       if (cancelled) return
@@ -950,7 +990,7 @@ export default function App() {
             if (!id || id <= prev) continue
             next = Math.max(next, id)
             const type = String(event?.type || '').toLowerCase()
-            if (!['joined', 'started', 'downloading', 'aborted', 'completed'].includes(type)) {
+            if (!['joined', 'started', 'downloading', 'aborted', 'completed', 'left'].includes(type)) {
               continue
             }
             const label = formatPeerLabel(
@@ -958,6 +998,8 @@ export default function App() {
               String(event?.peerHex4 || '')
             )
             const session = String(event?.sessionName || 'Host Session')
+            const peerKey = String(event?.peerKeyHex || event?.peerHex4 || event?.peerName || 'peer')
+            const notifyKey = `${peerKey}:${session}`
             const message =
               type === 'joined'
                 ? `Peer ${label} joined ${session}`
@@ -967,8 +1009,17 @@ export default function App() {
                   ? `Peer ${label} started downloading ${session}`
                 : type === 'aborted'
                   ? `Peer ${label} aborted downloading ${session}`
-                  : `Peer ${label} downloaded ${session}`
+                  : type === 'left'
+                    ? `Peer ${label} left ${session}`
+                    : `Peer ${label} downloaded ${session}`
             setWorkerLogMessage(message)
+            const last = peerNotifyStateRef.current.get(notifyKey) || ''
+            if (type === 'downloading' && last === 'downloading') continue
+            peerNotifyStateRef.current.set(notifyKey, type)
+            if (type === 'completed' || type === 'aborted' || type === 'left') {
+              peerNotifyStateRef.current.delete(notifyKey)
+            }
+            void notifyPeerEvent('PearDrop', message, notifyKey)
           }
           return next
         })
@@ -1186,7 +1237,11 @@ export default function App() {
       setStatus(`Hosting ${rawPayload.length} selected file(s)...`)
       setWorkerLogMessage('creating host session')
       upsertWorkerActivityBar('host', 'Starting host session...', 3, 5)
-      const result = await rpc.request(RpcCommand.CREATE_UPLOAD, { files: payload, sessionName })
+      const result = await rpc.request(RpcCommand.CREATE_UPLOAD, {
+        files: payload,
+        sessionName,
+        hostMode: effectivePackaging
+      })
       upsertWorkerActivityBar('host', 'Generating invite...', 4, 5)
       const createdKey = historyEntryKey(
         result?.transfer || { invite: result?.nativeInvite || result?.invite || '' }
@@ -1201,6 +1256,7 @@ export default function App() {
       setHostHistory((prev) =>
         rememberHostHistory(prev, result?.transfer, {
           sessionName,
+          hostMode: effectivePackaging,
           manifest: result?.manifest || [],
           invite: result?.nativeInvite || result?.invite || '',
           totalBytes: rawPayload.reduce((sum, item: any) => sum + Number(item?.byteLength || 0), 0),
@@ -2627,7 +2683,8 @@ export default function App() {
                     <Text style={[styles.hostMetaDate, themed.muted]}>{dateLine || '—'}</Text>
                     <Text style={[styles.hostMetaSize, themed.muted]}>
                       {formatBytes(Number(host.totalBytes || 0))}{' '}
-                      {host.fileCount ? `• ${host.fileCount} files` : ''}
+                      {host.fileCount ? `• ${host.fileCount} files` : ''} •{' '}
+                      {String(host.hostMode || 'raw').toUpperCase()}
                     </Text>
                   </AppPressable>
                 </View>
@@ -3846,6 +3903,9 @@ function normalizeHostHistoryRecord(entry: any, fallback: any = {}) {
     sessionLabel: String(
       entry.sessionLabel || fallback.sessionLabel || entry.sessionName || fallback.sessionName || ''
     ),
+    hostMode: (String(entry.hostMode || fallback.hostMode || '').toLowerCase() === 'zip'
+      ? 'zip'
+      : 'raw') as HostPackaging,
     createdAt: Number(entry.createdAt || fallback.createdAt || Date.now()),
     totalBytes: Number(entry.totalBytes || fallback.totalBytes || 0),
     fileCount: Number(entry.fileCount || fallback.fileCount || manifest.length || 0),
