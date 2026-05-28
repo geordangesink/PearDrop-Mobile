@@ -63,7 +63,8 @@ const RpcCommand = {
   UPDATE_ACTIVE_HOST: 11,
   LIST_HOST_PEER_ACTIVITY: 12,
   REPORT_HOST_PEER_EVENT: 13,
-  SET_PEER_PROFILE: 14
+  SET_PEER_PROFILE: 14,
+  CANCEL_OPERATION: 15
 } as const
 
 type ThemeMode = 'system' | 'dark' | 'light'
@@ -306,6 +307,10 @@ export default function App() {
   const rpcRef = useRef<any>(null)
   const appStateRef = useRef<string>(String(AppState.currentState || 'active'))
   const inviteDownloadBusyRef = useRef(false)
+  const hostStartupBusyRef = useRef(false)
+  const hostOperationIdRef = useRef('')
+  const inviteLoadOperationIdRef = useRef('')
+  const inviteDownloadOperationIdRef = useRef('')
   const pendingIosSavePromptRef = useRef<{
     artifacts: Array<{ path: string; name: string; mimeType: string }>
     includePhotos: boolean
@@ -318,6 +323,7 @@ export default function App() {
   const webRtcShareHostsRef = useRef<Map<string, any>>(new Map())
   const webRtcShareHostPromisesRef = useRef<Map<string, Promise<string>>>(new Map())
   const teardownPromiseRef = useRef<Promise<void> | null>(null)
+  const skipFirstDevCleanupRef = useRef(__DEV__)
   const isDark = themeMode === 'system' ? systemScheme !== 'light' : themeMode === 'dark'
   const theme = useMemo(() => getTheme(isDark), [isDark])
   const themed = useMemo(
@@ -353,6 +359,16 @@ export default function App() {
   const setWorkerLogMessage = (message: string) => {
     const text = redactInviteText(String(message || '').trim())
     setWorkerLog(`Worker log: ${text || 'waiting for events.'}`)
+  }
+
+  const newOperationId = () => `op:${Date.now()}:${Math.random().toString(16).slice(2, 10)}`
+
+  const cancelOperation = async (operationId: string) => {
+    const opId = String(operationId || '').trim()
+    if (!opId) return
+    try {
+      await rpc.request(RpcCommand.CANCEL_OPERATION, { operationId: opId })
+    } catch {}
   }
 
   const formatPeerLabel = (name: string, hex4: string) => {
@@ -637,6 +653,13 @@ export default function App() {
     })()
 
     return () => {
+      // React StrictMode in development mounts/unmounts effects once extra.
+      // Skipping the first cleanup prevents tearing down the worker/backend
+      // during the dev-only cycle, which can race with host startup.
+      if (skipFirstDevCleanupRef.current) {
+        skipFirstDevCleanupRef.current = false
+        return
+      }
       void teardownWorker()
     }
   }, [listActiveHostsWithWebRtc, rpc, teardownWorker])
@@ -648,6 +671,10 @@ export default function App() {
   useEffect(() => {
     inviteDownloadBusyRef.current = inviteDownloadBusy
   }, [inviteDownloadBusy])
+
+  useEffect(() => {
+    hostStartupBusyRef.current = hostingBusy || hostSelectedPending
+  }, [hostingBusy, hostSelectedPending])
 
   useEffect(() => {
     const loop = Animated.loop(
@@ -833,14 +860,17 @@ export default function App() {
       appStateRef.current = stateText
       const hasActiveHosting = (activeHostsRef.current || []).length > 0
       const hasActiveDownload = inviteDownloadBusyRef.current
-      const keepWorkerAlive = stateText !== 'active' && (hasActiveHosting || hasActiveDownload)
+      const hasHostStartupInFlight = hostStartupBusyRef.current
+      const keepWorkerAlive =
+        stateText !== 'active' &&
+        (hasActiveHosting || hasActiveDownload || hasHostStartupInFlight)
       if (!keepWorkerAlive) {
         try {
           workletRef.current?.update?.(nextState)
         } catch {}
       } else {
         setWorkerLogMessage(
-          '[lifecycle] keeping worker unsuspended in background during active hosting/download'
+          '[lifecycle] keeping worker unsuspended in background during hosting/download/startup'
         )
       }
       if (stateText === 'active') {
@@ -1196,6 +1226,8 @@ export default function App() {
     }
 
     try {
+      const operationId = newOperationId()
+      hostOperationIdRef.current = operationId
       const selectedTotalBytes = picked.reduce(
         (sum, item) => sum + Math.max(0, Number(item?.byteLength || 0)),
         0
@@ -1240,7 +1272,8 @@ export default function App() {
       const result = await rpc.request(RpcCommand.CREATE_UPLOAD, {
         files: payload,
         sessionName,
-        hostMode: effectivePackaging
+        hostMode: effectivePackaging,
+        operationId
       })
       upsertWorkerActivityBar('host', 'Generating invite...', 4, 5)
       const createdKey = historyEntryKey(
@@ -1286,6 +1319,7 @@ export default function App() {
       setWorkerLogMessage(`host upload failed - ${error?.message || String(error)}`)
       Alert.alert('Host failed', error?.message || String(error))
     } finally {
+      hostOperationIdRef.current = ''
       setHostingBusy(false)
       setTimeout(() => clearWorkerActivityBar('host'), 700)
     }
@@ -1669,6 +1703,8 @@ export default function App() {
     }
 
     try {
+      const operationId = newOperationId()
+      inviteLoadOperationIdRef.current = operationId
       setInviteLoading(true)
       setInviteMode(false)
       setInviteEntries([])
@@ -1680,7 +1716,7 @@ export default function App() {
       invitePreviewLoadRef.current = new Set()
       setStatus('Loading invite files...')
       setWorkerLogMessage('loading invite manifest')
-      const manifest = await rpc.request(RpcCommand.GET_MANIFEST, { invite })
+      const manifest = await rpc.request(RpcCommand.GET_MANIFEST, { invite, operationId })
       const entries = Array.isArray(manifest.files) ? manifest.files : []
       setInviteSource(invite)
       setInviteEntries(entries)
@@ -1695,6 +1731,7 @@ export default function App() {
       setWorkerLogMessage(`invite load failed - ${error?.message || String(error)}`)
       Alert.alert('Invite load failed', error?.message || String(error))
     } finally {
+      inviteLoadOperationIdRef.current = ''
       setInviteLoading(false)
     }
   }
@@ -1905,6 +1942,8 @@ export default function App() {
       return
     }
     setInviteDownloadBusy(true)
+    const operationId = newOperationId()
+    inviteDownloadOperationIdRef.current = operationId
     setStatus('Preparing download...')
     setWorkerLogMessage('preparing selected invite files')
     const normalizedPeerName = String(peerName || '').trim()
@@ -2006,7 +2045,8 @@ export default function App() {
               invite: inviteSource,
               drivePath: entry.drivePath,
               offset: fileDone,
-              length: Math.min(256 * 1024, expectedFileBytes - fileDone)
+              length: Math.min(256 * 1024, expectedFileBytes - fileDone),
+              operationId
             })
             const dataBase64Chunk = String(chunk?.dataBase64 || '')
             if (!dataBase64Chunk) break
@@ -2062,7 +2102,8 @@ export default function App() {
         } else {
           const read = await rpc.request(RpcCommand.READ_ENTRY, {
             invite: inviteSource,
-            drivePath: entry.drivePath
+            drivePath: entry.drivePath,
+            operationId
           })
           const dataBase64 = String(read.dataBase64 || '')
           fileDone = Math.max(0, Number(read.byteLength || 0))
@@ -2200,6 +2241,7 @@ export default function App() {
       setWorkerLogMessage(`download failed - ${error?.message || String(error)}`)
       Alert.alert('Download failed', error?.message || String(error))
     } finally {
+      inviteDownloadOperationIdRef.current = ''
       setInviteDownloadBusy(false)
       clearWorkerActivityBar('download')
     }
@@ -3550,6 +3592,14 @@ export default function App() {
                     <Text style={styles.primaryBtnText}>Host Selected</Text>
                   )}
                 </AppPressable>
+                {hostingBusy || hostSelectedPending ? (
+                  <AppPressable
+                    style={[styles.secondaryBtn, themed.panelSoft]}
+                    onPress={() => void cancelOperation(hostOperationIdRef.current)}
+                  >
+                    <Text style={[styles.secondaryBtnText, themed.text]}>Cancel</Text>
+                  </AppPressable>
+                ) : null}
               </View>
             ) : null}
 
@@ -3587,6 +3637,14 @@ export default function App() {
                   <Text style={styles.primaryBtnText}>View Drive</Text>
                 )}
               </AppPressable>
+              {inviteLoading ? (
+                <AppPressable
+                  style={[styles.secondaryBtn, themed.panelSoft]}
+                  onPress={() => void cancelOperation(inviteLoadOperationIdRef.current)}
+                >
+                  <Text style={[styles.secondaryBtnText, themed.text]}>Cancel</Text>
+                </AppPressable>
+              ) : null}
               {inviteMode ? (
                 <AppPressable
                   style={[
@@ -3622,6 +3680,14 @@ export default function App() {
                   ) : (
                     <Text style={[styles.secondaryBtnText, themed.text]}>Download Selected</Text>
                   )}
+                </AppPressable>
+              ) : null}
+              {inviteMode && inviteDownloadBusy ? (
+                <AppPressable
+                  style={[styles.secondaryBtn, themed.panelSoft]}
+                  onPress={() => void cancelOperation(inviteDownloadOperationIdRef.current)}
+                >
+                  <Text style={[styles.secondaryBtnText, themed.text]}>Cancel</Text>
                 </AppPressable>
               ) : null}
             </View>
