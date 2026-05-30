@@ -23,6 +23,7 @@ import {
   View
 } from 'react-native'
 import { StatusBar } from 'expo-status-bar'
+import { Ionicons } from '@expo/vector-icons'
 import * as DocumentPicker from 'expo-document-picker'
 import * as FileSystem from 'expo-file-system/legacy'
 import * as ImagePicker from 'expo-image-picker'
@@ -70,7 +71,6 @@ const RpcCommand = {
 type ThemeMode = 'system' | 'dark' | 'light'
 type MainTab = 'upload' | 'download'
 type HostPackaging = 'raw' | 'zip'
-type UploadView = 'host-new' | 'hosts'
 
 type FileRecord = {
   id: string
@@ -251,11 +251,9 @@ function getTheme(isDark: boolean) {
 export default function App() {
   const systemScheme = useColorScheme()
   const [status, setStatus] = useState('Starting worker...')
-  const [workerLog, setWorkerLog] = useState('Worker logs: waiting for events.')
   const [workerBooting, setWorkerBooting] = useState(true)
   const [inviteInput, setInviteInput] = useState('')
   const [mainTab, setMainTab] = useState<MainTab>('upload')
-  const [uploadView, setUploadView] = useState<UploadView>('host-new')
   const [history, setHistory] = useState<any[]>([])
   const [hostHistory, setHostHistory] = useState<any[]>([])
   const [hostHistoryRemoved, setHostHistoryRemoved] = useState<Set<string>>(new Set())
@@ -273,6 +271,10 @@ export default function App() {
   const [metadataLoaded, setMetadataLoaded] = useState(false)
   const [hostNameModalVisible, setHostNameModalVisible] = useState(false)
   const [hostNameDraft, setHostNameDraft] = useState('Host Session')
+  const [sessionNameEditVisible, setSessionNameEditVisible] = useState(false)
+  const [sessionNameEditDraft, setSessionNameEditDraft] = useState('Host Session')
+  const [sessionNameEditInvite, setSessionNameEditInvite] = useState('')
+  const [sessionNameEditHistoryKey, setSessionNameEditHistoryKey] = useState('')
   const [hostPackagingMode, setHostPackagingMode] = useState<HostPackaging>('zip')
   const [pendingHostMode, setPendingHostMode] = useState<'selected' | ''>('')
   const [inviteMode, setInviteMode] = useState(false)
@@ -299,6 +301,7 @@ export default function App() {
   const [peerName, setPeerName] = useState('')
   const [onboardingDone, setOnboardingDone] = useState(false)
   const [hostPeerRows, setHostPeerRows] = useState<any[]>([])
+  const [highlightedHostInvite, setHighlightedHostInvite] = useState('')
   const [, setHostPeerLastEventId] = useState(0)
   const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const filesRef = useRef<FileRecord[]>([])
@@ -311,6 +314,8 @@ export default function App() {
   const hostOperationIdRef = useRef('')
   const inviteLoadOperationIdRef = useRef('')
   const inviteDownloadOperationIdRef = useRef('')
+  const cancelStopSelectedRef = useRef(false)
+  const cancelRehostSelectedRef = useRef(false)
   const pendingIosSavePromptRef = useRef<{
     artifacts: Array<{ path: string; name: string; mimeType: string }>
     includePhotos: boolean
@@ -322,6 +327,8 @@ export default function App() {
   const invitePreviewLoadRef = useRef<Set<string>>(new Set())
   const webRtcShareHostsRef = useRef<Map<string, any>>(new Map())
   const webRtcShareHostPromisesRef = useRef<Map<string, Promise<string>>>(new Map())
+  const uploadScrollRef = useRef<ScrollView | null>(null)
+  const hostCardYByInviteRef = useRef<Map<string, number>>(new Map())
   const teardownPromiseRef = useRef<Promise<void> | null>(null)
   const skipFirstDevCleanupRef = useRef(__DEV__)
   const isDark = themeMode === 'system' ? systemScheme !== 'light' : themeMode === 'dark'
@@ -358,7 +365,7 @@ export default function App() {
 
   const setWorkerLogMessage = (message: string) => {
     const text = redactInviteText(String(message || '').trim())
-    setWorkerLog(`Worker log: ${text || 'waiting for events.'}`)
+    if (text) console.log(`[worker] ${text}`)
   }
 
   const newOperationId = () => `op:${Date.now()}:${Math.random().toString(16).slice(2, 10)}`
@@ -379,6 +386,21 @@ export default function App() {
         .slice(0, 4) || '----'
     return `${safeName} (${safeHex})`
   }
+
+  const highlightAndScrollToHost = useCallback((inviteRaw: string) => {
+    const invite = String(inviteRaw || '').trim()
+    if (!invite) return
+    setHighlightedHostInvite(invite)
+    requestAnimationFrame(() => {
+      const y = hostCardYByInviteRef.current.get(invite)
+      if (typeof y === 'number') {
+        uploadScrollRef.current?.scrollTo({ y: Math.max(0, y - 120), animated: true })
+      }
+    })
+    setTimeout(() => {
+      setHighlightedHostInvite((prev) => (prev === invite ? '' : prev))
+    }, 1800)
+  }, [])
 
   const flashCopyFeedback = (key: string) => {
     const value = String(key || '').trim()
@@ -898,9 +920,9 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (uploadView !== 'hosts') return
+    if (mainTab !== 'upload') return
     void refreshHosts()
-  }, [uploadView])
+  }, [mainTab])
 
   useEffect(() => {
     const activeInviteSet = new Set(
@@ -1032,16 +1054,16 @@ export default function App() {
             const notifyKey = `${peerKey}:${session}`
             const message =
               type === 'joined'
-                ? `Peer ${label} joined ${session}`
+                ? `joined ${session}`
                 : type === 'downloading'
-                  ? `Peer ${label} is downloading ${session}`
+                  ? `is downloading ${session}`
                 : type === 'started'
-                  ? `Peer ${label} started downloading ${session}`
+                  ? `started downloading ${session}`
                 : type === 'aborted'
-                  ? `Peer ${label} aborted downloading ${session}`
+                  ? `aborted downloading ${session}`
                   : type === 'left'
-                    ? `Peer ${label} left ${session}`
-                    : `Peer ${label} downloaded ${session}`
+                    ? `left ${session}`
+                    : `downloaded ${session}`
             setWorkerLogMessage(message)
             const last = peerNotifyStateRef.current.get(notifyKey) || ''
             if (type === 'downloading' && last === 'downloading') continue
@@ -1049,7 +1071,7 @@ export default function App() {
             if (type === 'completed' || type === 'aborted' || type === 'left') {
               peerNotifyStateRef.current.delete(notifyKey)
             }
-            void notifyPeerEvent('PearDrop', message, notifyKey)
+            void notifyPeerEvent(label, message, notifyKey)
           }
           return next
         })
@@ -1306,7 +1328,6 @@ export default function App() {
       )
       const invite = result.nativeInvite || result.invite
       setMainTab('upload')
-      setUploadView('hosts')
       setHostDetailInvite('')
       setHostDetailSourceRefs([])
       setHostDetailSelectedRefs(new Set())
@@ -1315,6 +1336,7 @@ export default function App() {
       setStatus('upload host created.')
       setWorkerLogMessage('host session ready')
       await Promise.all([refresh(), refreshHosts()])
+      highlightAndScrollToHost(String(invite || ''))
     } catch (error: any) {
       setWorkerLogMessage(`host upload failed - ${error?.message || String(error)}`)
       Alert.alert('Host failed', error?.message || String(error))
@@ -1639,7 +1661,6 @@ export default function App() {
       const invite = result.nativeInvite || result.invite || ''
       if (invite) {
         setMainTab('upload')
-        setUploadView('hosts')
         setHostDetailInvite('')
         setHostDetailSourceRefs([])
         setHostDetailSelectedRefs(new Set())
@@ -1655,6 +1676,7 @@ export default function App() {
         })
       }
       await Promise.all([refresh(), refreshHosts()])
+      highlightAndScrollToHost(String(invite || ''))
     } catch (error: any) {
       setWorkerLogMessage(`host from history failed - ${error?.message || String(error)}`)
       Alert.alert('Host failed', error?.message || String(error))
@@ -1692,6 +1714,53 @@ export default function App() {
     setHostNameModalVisible(false)
     setPendingHostMode('')
     setHostSelectedPending(false)
+  }
+
+  const openSessionNameEditor = (opts: { invite?: string; historyKey?: string; current?: string }) => {
+    setSessionNameEditInvite(String(opts.invite || '').trim())
+    setSessionNameEditHistoryKey(String(opts.historyKey || '').trim())
+    setSessionNameEditDraft(String(opts.current || 'Host Session').trim() || 'Host Session')
+    setSessionNameEditVisible(true)
+  }
+
+  const closeSessionNameEditor = () => {
+    setSessionNameEditVisible(false)
+    setSessionNameEditInvite('')
+    setSessionNameEditHistoryKey('')
+    setSessionNameEditDraft('Host Session')
+  }
+
+  const applySessionNameEdit = () => {
+    const nextLabel = String(sessionNameEditDraft || '').trim() || 'Host Session'
+    const inviteKey = String(sessionNameEditInvite || '').trim()
+    const rowKey = String(sessionNameEditHistoryKey || '').trim()
+    if (!inviteKey && !rowKey) {
+      closeSessionNameEditor()
+      return
+    }
+
+    setActiveHosts((prev) =>
+      prev.map((host) =>
+        inviteKey && String(host?.invite || '').trim() === inviteKey
+          ? { ...host, sessionLabel: nextLabel, sessionName: nextLabel }
+          : host
+      )
+    )
+    setHostHistory((prev) =>
+      prev.map((item) => {
+        const itemInvite = String(item?.invite || '').trim()
+        const itemKey = historyEntryKey(item)
+        if ((inviteKey && itemInvite === inviteKey) || (rowKey && itemKey === rowKey)) {
+          return {
+            ...item,
+            sessionLabel: nextLabel,
+            sessionName: nextLabel
+          }
+        }
+        return item
+      })
+    )
+    closeSessionNameEditor()
   }
 
   const onDownload = async () => {
@@ -1746,16 +1815,24 @@ export default function App() {
     const fallbackNative = extractInviteUrl(String(nativeInviteForWebRtc || raw || '').trim())
     try {
       const requireWebRtc = options.requireWebRtc === true
-      let resolved = extractShareInviteUrl(raw)
-      if (requireWebRtc && !hasWebRtcSignal(resolved) && fallbackNative) {
-        const webrtcInvite = await ensureWebRtcShareInvite(fallbackNative)
-        if (hasWebRtcSignal(webrtcInvite)) {
-          resolved = webrtcInvite
+      let resolved = extractShareInviteUrl(raw) || raw
+      if (requireWebRtc && !hasWebRtcSignal(resolved)) {
+        const candidateNative =
+          fallbackNative || extractInviteUrl(raw) || String(nativeInviteForWebRtc || '').trim()
+        if (candidateNative) {
+          const webrtcInvite = await ensureWebRtcShareInvite(candidateNative)
+          if (hasWebRtcSignal(webrtcInvite)) {
+            resolved = webrtcInvite
+          }
         }
       }
-      if (!resolved) return
+      if (!resolved) {
+        throw new Error('Invite is still initializing. Please try again in a moment.')
+      }
       if (requireWebRtc && !hasWebRtcSignal(resolved)) {
-        throw new Error('WebRTC invite not ready yet. Please try again in a moment.')
+        const nativeFallback = fallbackNative || extractInviteUrl(raw)
+        if (nativeFallback) resolved = nativeFallback
+        else throw new Error('WebRTC invite not ready yet. Please try again in a moment.')
       }
       const shareLink = `${PUBLIC_SITE_ORIGIN}/open/?invite=${encodeURIComponent(resolved)}`
       await Clipboard.setStringAsync(shareLink)
@@ -2300,6 +2377,12 @@ export default function App() {
       })
       await rpc.request(RpcCommand.STOP_HOST, { invite })
       closeWebRtcShareHost(key)
+      setStarredHosts((prev) => {
+        if (!prev.has(key)) return prev
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
       if (hostDetailInvite === invite) {
         setHostDetailInvite('')
         setHostDetailSourceRefs([])
@@ -2321,8 +2404,23 @@ export default function App() {
   const removeHistoryItems = (items: any[]) => {
     const keys = items.map((item) => historyEntryKey(item)).filter(Boolean)
     if (!keys.length) return
+    const invitesToRemove = new Set(
+      items
+        .map((item) => String(item?.invite || '').trim())
+        .filter(Boolean)
+    )
     const removeSet = new Set(keys)
     setHostHistory((prev) => prev.filter((item) => !removeSet.has(historyEntryKey(item))))
+    if (invitesToRemove.size) {
+      setStarredHosts((prev) => {
+        let changed = false
+        const next = new Set(prev)
+        for (const invite of invitesToRemove) {
+          if (next.delete(invite)) changed = true
+        }
+        return changed ? next : prev
+      })
+    }
     setHostHistoryRemoved((prev) => {
       const next = new Set(prev)
       for (const key of keys) next.add(key)
@@ -2336,17 +2434,24 @@ export default function App() {
   }
 
   const startSelectedHistoryHosts = async (rows: any[]) => {
-    if (hostingBusy) return
+    if (hostingBusy) {
+      cancelRehostSelectedRef.current = true
+      setStatus('Re-hosting cancelled.')
+      return
+    }
     const picked = rows.filter((item) => selectedHostHistory.has(historyEntryKey(item)))
     if (!picked.length) {
       Alert.alert('Select history', 'Select one or more history items first.')
       return
     }
+    cancelRehostSelectedRef.current = false
     for (const item of picked) {
+      if (cancelRehostSelectedRef.current) break
       // Keep host restart sequence explicit and stable.
       // eslint-disable-next-line no-await-in-loop
       await restartHostFromHistory(item)
     }
+    cancelRehostSelectedRef.current = false
   }
 
   const toggleSelectHostHistory = (item: any) => {
@@ -2386,38 +2491,32 @@ export default function App() {
     setSelectedHostHistory(allSelected ? new Set() : new Set(keys))
   }
 
-  const starSelectedActiveHosts = () => {
-    if (!selectedActiveHosts.size) {
-      Alert.alert('Select hosts', 'Select one or more active hosts first.')
+  const stopSelectedActiveHosts = async () => {
+    if (stoppingSelectedHosts) {
+      cancelStopSelectedRef.current = true
+      setStatus('Stopping selected hosts cancelled.')
       return
     }
-    setStarredHosts((prev) => {
-      const next = new Set(prev)
-      for (const invite of selectedActiveHosts) next.add(invite)
-      return next
-    })
-    setStatus(
-      `Starred ${selectedActiveHosts.size} host${selectedActiveHosts.size === 1 ? '' : 's'}.`
-    )
-  }
-
-  const stopSelectedActiveHosts = async () => {
-    if (stoppingSelectedHosts) return
     const invites = Array.from(selectedActiveHosts).filter(Boolean)
     if (!invites.length) {
       Alert.alert('Select hosts', 'Select one or more active hosts first.')
       return
     }
     setStoppingSelectedHosts(true)
+    cancelStopSelectedRef.current = false
     try {
       for (const invite of invites) {
+        if (cancelStopSelectedRef.current) break
         // Keep stop order deterministic for easier user feedback.
         // eslint-disable-next-line no-await-in-loop
         await stopActiveHost(invite)
       }
-      setSelectedActiveHosts(new Set())
+      if (!cancelStopSelectedRef.current) {
+        setSelectedActiveHosts(new Set())
+      }
     } finally {
       setStoppingSelectedHosts(false)
+      cancelStopSelectedRef.current = false
     }
   }
 
@@ -2435,14 +2534,14 @@ export default function App() {
         <View style={styles.hostSection}>
           <View style={styles.hostDetailHead}>
             <AppPressable
-              style={[styles.rowBtn, themed.panelSoft]}
+              style={styles.backArrowBtn}
               onPress={() => {
                 setHostDetailInvite('')
                 setHostDetailSourceRefs([])
                 setHostDetailSelectedRefs(new Set())
               }}
             >
-              <Text style={[styles.rowBtnText, themed.text]}>← Back</Text>
+              <Text style={[styles.backArrowText, themed.text]}>←</Text>
             </AppPressable>
             <Text style={[styles.hostDetailTitle, themed.text]}>Host session</Text>
           </View>
@@ -2504,7 +2603,7 @@ export default function App() {
                 style={[styles.rowBtn, themed.panelSoft]}
                 onPress={() => void addHostDetailFiles()}
               >
-                <Text style={[styles.rowBtnText, themed.text]}>＋ File</Text>
+                <Ionicons name='add-outline' size={16} color={theme.text} />
               </AppPressable>
               <AppPressable
                 style={[styles.rowBtn, themed.panelSoft]}
@@ -2525,7 +2624,7 @@ export default function App() {
                 {hostDetailApplying ? (
                   <ActivityIndicator size='small' color={theme.accent} />
                 ) : (
-                  <Text style={[styles.rowBtnText, themed.text]}>Apply</Text>
+                  <Ionicons name='checkmark-outline' size={16} color={theme.text} />
                 )}
               </AppPressable>
             </View>
@@ -2605,20 +2704,25 @@ export default function App() {
 
     return (
       <View style={styles.hostSection}>
-        <View style={[styles.hostCard, themed.panel]}>
-          <View style={styles.hostSectionHead}>
-            <Text style={[styles.hostSectionTitle, themed.text]}>Joining peers</Text>
-            <Text style={[styles.hostSectionMeta, themed.muted]}>{hostPeerRows.length}</Text>
+        <View style={[styles.sectionBar, themed.panelSoft]}>
+          <View style={styles.sectionBarLeft}>
+            <Ionicons name='person-outline' size={20} color={theme.text} />
+            <Text style={[styles.sectionBarCount, themed.muted]}>{hostPeerRows.length}</Text>
           </View>
-          {hostPeerRows.length ? (
-            hostPeerRows.slice(0, 8).map((row) => {
+        </View>
+        {hostPeerRows.length ? (
+          hostPeerRows.slice(0, 8).map((row) => {
               const progress = Math.max(0, Math.min(100, Math.round(Number(row?.progress || 0) * 100)))
               const statusText = String(row?.status || '').toLowerCase()
               const isComplete = statusText === 'completed'
               const isJoined = statusText === 'joined'
               const isDownloading = statusText === 'downloading'
               return (
-                <View key={String(row?.id || Math.random())} style={styles.peerRow}>
+                <View
+                  key={String(row?.id || Math.random())}
+                  style={[styles.hostCard, themed.panel, styles.peerCard]}
+                >
+                  <View style={styles.peerRow}>
                   <View style={styles.peerRowMain}>
                     <Text style={[styles.fileName, themed.text]}>
                       {formatPeerLabel(String(row?.peerName || ''), String(row?.peerHex4 || ''))}
@@ -2642,37 +2746,33 @@ export default function App() {
                           : `${progress}%`}
                   </Text>
                 </View>
+                </View>
               )
             })
           ) : (
-            <Text style={[styles.fileMeta, themed.muted]}>No joining peers yet.</Text>
+            <Text style={[styles.muted, themed.muted]}>No peers connected</Text>
           )}
-        </View>
 
-        <View style={styles.hostSectionHead}>
-          <Text style={[styles.hostSectionTitle, themed.text]}>Active hosts (online)</Text>
+        <View style={[styles.sectionBar, themed.panelSoft]}>
+          <View style={styles.sectionBarLeft}>
+            <Ionicons name='git-network-outline' size={20} color={theme.text} />
+            <Text style={[styles.sectionBarCount, themed.muted]}>{activeHosts.length}</Text>
+          </View>
           <View style={styles.hostSectionActions}>
-            <Text style={[styles.hostSectionMeta, themed.muted]}>{selectedActiveHosts.size}</Text>
             <AppPressable
               style={[styles.rowBtn, themed.panelSoft]}
               onPress={toggleSelectAllActiveHosts}
+              accessibilityLabel='Select all active hosts'
             >
-              <Text style={[styles.rowBtnText, themed.text]}>
-                {activeHosts.length > 0 && selectedActiveHosts.size === activeHosts.length
-                  ? 'Deselect All'
-                  : 'Select All'}
-              </Text>
-            </AppPressable>
-            <AppPressable
-              style={[styles.rowBtn, themed.panelSoft]}
-              onPress={starSelectedActiveHosts}
-            >
-              <Text style={[styles.rowBtnText, themed.text]}>
-                {selectedActiveHosts.size > 0 &&
-                Array.from(selectedActiveHosts).every((invite) => starredHosts.has(invite))
-                  ? '★'
-                  : '☆'}
-              </Text>
+              <Ionicons
+                name={
+                  activeHosts.length > 0 && selectedActiveHosts.size === activeHosts.length
+                    ? 'checkbox-outline'
+                    : 'square-outline'
+                }
+                size={17}
+                color={theme.text}
+              />
             </AppPressable>
             <AppPressable
               style={[
@@ -2681,7 +2781,6 @@ export default function App() {
                 stoppingSelectedHosts && styles.rowBtnDisabled
               ]}
               onPress={() => void stopSelectedActiveHosts()}
-              disabled={stoppingSelectedHosts}
             >
               {stoppingSelectedHosts ? (
                 <ActivityIndicator size='small' color={theme.danger} />
@@ -2704,7 +2803,19 @@ export default function App() {
             )
             const dateLine = formatHostSessionDateLine(host.createdAt, label.embeddedDateTime)
             return (
-              <View key={host.invite} style={[styles.hostCard, themed.panel]}>
+              <View
+                key={host.invite}
+                onLayout={(event) => {
+                  const inviteKey = String(host.invite || '').trim()
+                  if (!inviteKey) return
+                  hostCardYByInviteRef.current.set(inviteKey, event.nativeEvent.layout.y)
+                }}
+                style={[
+                  styles.hostCard,
+                  themed.panel,
+                  highlightedHostInvite === String(host.invite || '').trim() && styles.hostCardGlow
+                ]}
+              >
                 <View style={styles.hostCardHead}>
                   <AppPressable
                     style={[styles.rowBtn, themed.panelSoft]}
@@ -2738,17 +2849,14 @@ export default function App() {
                       <>
                         <AppPressable
                           style={[styles.rowBtn, themed.panelSoft]}
-                          onPress={() => toggleStarHostInvite(host.invite)}
+                          onPress={() =>
+                            openSessionNameEditor({
+                              invite: String(host.invite || ''),
+                              current: label.title
+                            })
+                          }
                         >
-                          <Text style={[styles.rowBtnText, themed.text]}>
-                            {starredHosts.has(String(host.invite || '')) ? '★' : '☆'}
-                          </Text>
-                        </AppPressable>
-                        <AppPressable
-                          style={[styles.rowBtn, themed.panelSoft]}
-                          onPress={() => openHostDetail(host.invite)}
-                        >
-                          <Text style={[styles.rowBtnText, themed.text]}>Open</Text>
+                          <Ionicons name='pencil-outline' size={16} color={theme.text} />
                         </AppPressable>
                         <AppPressable
                           style={[styles.rowBtn, themed.panelSoft]}
@@ -2763,6 +2871,14 @@ export default function App() {
                         >
                           <Text style={[styles.rowBtnText, themed.text]}>
                             {copyFeedbackKey === `host:${host.invite}` ? '✓' : ACTION_ICON_COPY}
+                          </Text>
+                        </AppPressable>
+                        <AppPressable
+                          style={[styles.rowBtn, themed.panelSoft]}
+                          onPress={() => toggleStarHostInvite(host.invite)}
+                        >
+                          <Text style={[styles.rowBtnText, themed.text]}>
+                            {starredHosts.has(String(host.invite || '')) ? '★' : '☆'}
                           </Text>
                         </AppPressable>
                         <AppPressable
@@ -2791,11 +2907,13 @@ export default function App() {
           })
         )}
 
-        <View style={styles.hostSectionHead}>
-          <Text style={[styles.hostSectionTitle, themed.text]}>Starred hosts</Text>
-          <Text style={[styles.hostSectionMeta, themed.muted]}>
-            {Array.from(starredHosts).length}
-          </Text>
+        <View style={[styles.sectionBar, themed.panelSoft]}>
+          <View style={styles.sectionBarLeft}>
+            <Ionicons name='star-outline' size={20} color={theme.text} />
+            <Text style={[styles.sectionBarCount, themed.muted]}>
+              {Array.from(starredHosts).length}
+            </Text>
+          </View>
         </View>
         {Array.from(starredHosts).length === 0 ? (
           <Text style={[styles.muted, themed.muted]}>No starred hosts.</Text>
@@ -2825,17 +2943,75 @@ export default function App() {
 
             return (
               <View key={`starred:${invite}`} style={[styles.hostCard, themed.panel]}>
-                <Text style={[styles.hostCardTitle, themed.text]}>
-                  {label.title}
-                  {label.hash ? <Text style={styles.hostHashInline}> ({label.hash})</Text> : null}
-                </Text>
-                <Text style={[styles.hostMetaDate, themed.muted]}>{dateLine || '—'}</Text>
-                <Text style={[styles.hostMetaSize, themed.muted]}>
-                  {canStop
-                    ? `${formatBytes(totalBytes)} • ${activeHost?.fileCount || 0} files`
-                    : `${formatBytes(totalBytes)}${historyItem?.fileCount ? ` • ${historyItem.fileCount} files` : ' • Not active'}`}
-                </Text>
+                <View style={styles.hostCardHead}>
+                  <AppPressable
+                    style={[styles.rowBtn, themed.panelSoft]}
+                    onPress={() => toggleStarHostInvite(invite)}
+                  >
+                    <Text style={[styles.rowBtnText, themed.text]}>
+                      {starredHosts.has(String(invite || '')) ? '☑' : '☐'}
+                    </Text>
+                  </AppPressable>
+                  <AppPressable
+                    style={styles.hostCardTitleWrap}
+                    onPress={() =>
+                      openSessionNameEditor({
+                        invite,
+                        historyKey,
+                        current: label.title
+                      })
+                    }
+                  >
+                    <Text style={[styles.hostCardTitle, themed.text]}>
+                      {label.title}
+                      {label.hash ? <Text style={styles.hostHashInline}> ({label.hash})</Text> : null}
+                    </Text>
+                    <Text style={[styles.hostMetaDate, themed.muted]}>{dateLine || '—'}</Text>
+                    <Text style={[styles.hostMetaSize, themed.muted]}>
+                      {canStop
+                        ? `${formatBytes(totalBytes)} • ${activeHost?.fileCount || 0} files`
+                        : `${formatBytes(totalBytes)}${historyItem?.fileCount ? ` • ${historyItem.fileCount} files` : ' • Not active'}`}
+                    </Text>
+                  </AppPressable>
+                </View>
                 <View style={styles.hostCardActions}>
+                  <AppPressable
+                    style={[styles.rowBtn, themed.panelSoft]}
+                    onPress={() =>
+                      openSessionNameEditor({
+                        invite,
+                        historyKey,
+                        current: label.title
+                      })
+                    }
+                  >
+                    <Ionicons name='pencil-outline' size={16} color={theme.text} />
+                  </AppPressable>
+                  <AppPressable
+                    style={[styles.rowBtn, themed.panelSoft]}
+                    onPress={() =>
+                      copyInviteIntoDownload(
+                        String(activeHost?.webSwarmLink || invite || ''),
+                        `starred:${invite}`,
+                        String(invite || ''),
+                        { requireWebRtc: true }
+                      )
+                    }
+                  >
+                    <Text style={[styles.rowBtnText, themed.text]}>
+                      {copyFeedbackKey === `starred:${invite}` ? '✓' : ACTION_ICON_COPY}
+                    </Text>
+                  </AppPressable>
+                  <AppPressable
+                    style={[styles.rowBtn, themed.panelSoft]}
+                    onPress={() => toggleStarHostInvite(invite)}
+                  >
+                    <Ionicons
+                      name={starredHosts.has(String(invite || '')) ? 'star' : 'star-outline'}
+                      size={16}
+                      color={theme.text}
+                    />
+                  </AppPressable>
                   {canStop ? (
                     <AppPressable
                       style={[styles.rowBtn, themed.panelSoft, isStopping && styles.rowBtnDisabled]}
@@ -2866,53 +3042,40 @@ export default function App() {
                         <Text style={[styles.rowBtnText, themed.text]}>{ACTION_ICON_PLAY}</Text>
                       )}
                     </AppPressable>
-                  ) : null}
-                  <AppPressable
-                    style={[styles.rowBtn, themed.panelSoft]}
-                    onPress={() =>
-                      copyInviteIntoDownload(
-                        String(activeHost?.webSwarmLink || invite || ''),
-                        `starred:${invite}`,
-                        String(invite || ''),
-                        { requireWebRtc: true }
-                      )
-                    }
-                  >
-                    <Text style={[styles.rowBtnText, themed.text]}>
-                      {copyFeedbackKey === `starred:${invite}` ? '✓' : ACTION_ICON_COPY}
-                    </Text>
-                  </AppPressable>
-                  <AppPressable
-                    style={[styles.rowBtn, themed.panelSoft]}
-                    onPress={() => toggleStarHostInvite(invite)}
-                  >
-                    <Text style={[styles.rowBtnText, themed.text]}>Unstar</Text>
-                  </AppPressable>
+                  ) : (
+                    <View style={[styles.rowBtn, themed.panelSoft, styles.rowBtnDisabled]} />
+                  )}
                 </View>
               </View>
             )
           })
         )}
 
-        <View style={styles.hostSectionHead}>
-          <Text style={[styles.hostSectionTitle, themed.text]}>History</Text>
+        <View style={[styles.sectionBar, themed.panelSoft]}>
+          <View style={styles.sectionBarLeft}>
+            <Ionicons name='time-outline' size={20} color={theme.text} />
+            <Text style={[styles.sectionBarCount, themed.muted]}>{hostHistoryRows.length}</Text>
+          </View>
           <View style={styles.hostSectionActions}>
-            <Text style={[styles.hostSectionMeta, themed.muted]}>{selectedHostHistory.size}</Text>
             <AppPressable
               style={[styles.rowBtn, themed.panelSoft]}
               onPress={() => toggleSelectAllHistoryHosts(hostHistoryRows)}
+              accessibilityLabel='Select all history items'
             >
-              <Text style={[styles.rowBtnText, themed.text]}>
-                {hostHistoryRows.length > 0 &&
-                hostHistoryRows.every((item) => selectedHostHistory.has(historyEntryKey(item)))
-                  ? 'Deselect All'
-                  : 'Select All'}
-              </Text>
+              <Ionicons
+                name={
+                  hostHistoryRows.length > 0 &&
+                  hostHistoryRows.every((item) => selectedHostHistory.has(historyEntryKey(item)))
+                    ? 'checkbox-outline'
+                    : 'square-outline'
+                }
+                size={17}
+                color={theme.text}
+              />
             </AppPressable>
             <AppPressable
               style={[styles.rowBtn, themed.panelSoft, hostingBusy && styles.rowBtnDisabled]}
               onPress={() => void startSelectedHistoryHosts(hostHistoryRows)}
-              disabled={hostingBusy}
             >
               {hostingBusy ? (
                 <ActivityIndicator size='small' color={theme.accent} />
@@ -2960,16 +3123,7 @@ export default function App() {
                 key={historyKey || String(item.id || item.transferId || Math.random())}
                 style={[styles.hostCard, themed.panel]}
               >
-                <Text style={[styles.hostCardTitle, themed.text]}>
-                  {label.title}
-                  {label.hash ? <Text style={styles.hostHashInline}> ({label.hash})</Text> : null}
-                </Text>
-                <Text style={[styles.hostMetaDate, themed.muted]}>{dateLine || '—'}</Text>
-                <Text style={[styles.hostMetaSize, themed.muted]}>
-                  {formatBytes(Number(item.totalBytes || 0))}{' '}
-                  {item.fileCount ? `• ${item.fileCount} files` : ''}
-                </Text>
-                <View style={styles.hostCardActions}>
+                <View style={styles.hostCardHead}>
                   <AppPressable
                     style={[styles.rowBtn, themed.panelSoft]}
                     onPress={() => toggleSelectHostHistory(item)}
@@ -2977,6 +3131,73 @@ export default function App() {
                     <Text style={[styles.rowBtnText, themed.text]}>
                       {selectedHostHistory.has(historyKey) ? '☑' : '☐'}
                     </Text>
+                  </AppPressable>
+                  <AppPressable
+                    style={styles.hostCardTitleWrap}
+                    onPress={() =>
+                      openSessionNameEditor({
+                        invite: String(item?.invite || ''),
+                        historyKey,
+                        current: label.title
+                      })
+                    }
+                  >
+                    <Text style={[styles.hostCardTitle, themed.text]}>
+                      {label.title}
+                      {label.hash ? <Text style={styles.hostHashInline}> ({label.hash})</Text> : null}
+                    </Text>
+                    <Text style={[styles.hostMetaDate, themed.muted]}>{dateLine || '—'}</Text>
+                    <Text style={[styles.hostMetaSize, themed.muted]}>
+                      {formatBytes(Number(item.totalBytes || 0))}{' '}
+                      {item.fileCount ? `• ${item.fileCount} files` : ''}
+                    </Text>
+                  </AppPressable>
+                </View>
+                <View style={styles.hostCardActions}>
+                  <AppPressable
+                    style={[styles.rowBtn, themed.panelSoft]}
+                    onPress={() =>
+                      openSessionNameEditor({
+                        invite: String(item?.invite || ''),
+                        historyKey,
+                        current: label.title
+                      })
+                    }
+                  >
+                    <Ionicons name='pencil-outline' size={16} color={theme.text} />
+                  </AppPressable>
+                  {item.invite ? (
+                    <AppPressable
+                      style={[styles.rowBtn, themed.panelSoft]}
+                      onPress={() =>
+                        copyInviteIntoDownload(
+                          item.invite,
+                          `history:${historyEntryKey(item)}`,
+                          String(item.invite || '')
+                        )
+                      }
+                    >
+                      <Text style={[styles.rowBtnText, themed.text]}>
+                        {copyFeedbackKey === `history:${historyEntryKey(item)}`
+                          ? '✓'
+                          : ACTION_ICON_COPY}
+                      </Text>
+                    </AppPressable>
+                  ) : (
+                    <View style={[styles.rowBtn, themed.panelSoft, styles.rowBtnDisabled]} />
+                  )}
+                  <AppPressable
+                    style={[styles.rowBtn, themed.panelSoft]}
+                    onPress={() => toggleStarHostInvite(String(item?.invite || ''))}
+                    disabled={!String(item?.invite || '').trim()}
+                  >
+                    <Ionicons
+                      name={
+                        starredHosts.has(String(item?.invite || '')) ? 'star' : 'star-outline'
+                      }
+                      size={16}
+                      color={theme.text}
+                    />
                   </AppPressable>
                   <AppPressable
                     style={[styles.rowBtn, themed.panelSoft, isRehosting && styles.rowBtnDisabled]}
@@ -3004,24 +3225,6 @@ export default function App() {
                   >
                     {renderDesktopTrashIcon()}
                   </AppPressable>
-                  {item.invite ? (
-                    <AppPressable
-                      style={[styles.rowBtn, themed.panelSoft]}
-                      onPress={() =>
-                        copyInviteIntoDownload(
-                          item.invite,
-                          `history:${historyEntryKey(item)}`,
-                          String(item.invite || '')
-                        )
-                      }
-                    >
-                      <Text style={[styles.rowBtnText, themed.text]}>
-                        {copyFeedbackKey === `history:${historyEntryKey(item)}`
-                          ? '✓'
-                          : ACTION_ICON_COPY}
-                      </Text>
-                    </AppPressable>
-                  ) : null}
                 </View>
               </View>
             )
@@ -3036,7 +3239,7 @@ export default function App() {
       <View style={styles.hostSection}>
         <View style={styles.hostDetailHead}>
           <AppPressable
-            style={[styles.rowBtn, themed.panelSoft]}
+            style={styles.backArrowBtn}
             onPress={() => {
               setInviteMode(false)
               setInviteEntries([])
@@ -3048,7 +3251,7 @@ export default function App() {
               invitePreviewLoadRef.current = new Set()
             }}
           >
-            <Text style={[styles.rowBtnText, themed.text]}>← Back</Text>
+            <Text style={[styles.backArrowText, themed.text]}>←</Text>
           </AppPressable>
           <Text style={styles.hostDetailTitle}>View drive</Text>
         </View>
@@ -3154,7 +3357,17 @@ export default function App() {
 
   const renderFileList = () => {
     if (!visibleFiles.length) {
-      return <Text style={[styles.muted, themed.muted]}>No files in this section yet.</Text>
+      return (
+        <AppPressable style={[styles.emptyFileDropzone, themed.panel]} onPress={onAddSource}>
+          <View style={[styles.emptyFileIconWrap, themed.panelSoft]}>
+            <Ionicons name='document-outline' size={28} color={theme.muted} />
+          </View>
+          <Text style={[styles.emptyFileDropzoneTitle, themed.text]}>Add files</Text>
+          <Text style={[styles.emptyFileDropzoneSub, themed.muted]}>
+            Tap to choose files for hosting
+          </Text>
+        </AppPressable>
+      )
     }
 
     return visibleFiles.map((item) => {
@@ -3221,62 +3434,6 @@ export default function App() {
       )
     })
   }
-
-  const renderWorkerPanel = () => (
-    <View style={[styles.activityPanel, themed.panel]}>
-      <Text style={[styles.status, themed.muted]}>{status}</Text>
-      <Text style={[styles.workerLog, themed.muted]}>{workerLog}</Text>
-      {workerBooting ? (
-        <View style={styles.workerPanelSkeletonCard}>
-          <View style={[styles.skeletonBlock, themed.panelSoft]} />
-          <Animated.View
-            pointerEvents='none'
-            style={[
-              styles.skeletonShimmerOverlay,
-              {
-                transform: [
-                  {
-                    translateX: skeletonShimmer.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [-320, 320]
-                    })
-                  }
-                ]
-              }
-            ]}
-          />
-        </View>
-      ) : null}
-      {workerActivityBars.map((bar) => (
-        <View key={bar.id} style={styles.ingestWrap}>
-          <View style={styles.ingestLabelRow}>
-            <Text style={[styles.ingestLabel, themed.muted]}>
-              {bar.label}{' '}
-              {bar.displayMode === 'bytes'
-                ? `${Math.round((bar.done / Math.max(bar.total, 1)) * 100)}% (${formatBytes(bar.done)} / ${formatBytes(bar.total)})`
-                : `${bar.done}/${Math.max(bar.total, 1)}`}
-            </Text>
-            {bar.active ? <ActivityIndicator size='small' color={theme.accent} /> : null}
-          </View>
-          {bar.subtitle ? (
-            <Text style={[styles.ingestSubLabel, themed.muted]}>{bar.subtitle}</Text>
-          ) : null}
-          {bar.etaMs && bar.etaMs > 0 ? (
-            <Text style={[styles.ingestSubLabel, themed.muted]}>ETA {formatEta(bar.etaMs)}</Text>
-          ) : null}
-          <View style={[styles.ingestTrack, themed.panelSoft]}>
-            <View
-              style={[
-                styles.ingestFill,
-                themed.accentBg,
-                { width: `${Math.round((bar.done / Math.max(bar.total, 1)) * 100)}%` }
-              ]}
-            />
-          </View>
-        </View>
-      ))}
-    </View>
-  )
 
   const renderStartupContainerSkeleton = (variant: 'upload' | 'download') => (
     <View style={styles.skeletonListWrap}>
@@ -3434,10 +3591,10 @@ export default function App() {
       <View style={[styles.topHeader, themed.container]}>
         {optionsViewOpen ? (
           <AppPressable
-            style={[styles.rowBtn, themed.panelSoft]}
+            style={styles.backArrowBtn}
             onPress={() => setOptionsViewOpen(false)}
           >
-            <Text style={[styles.rowBtnText, themed.text]}>← Back</Text>
+            <Text style={[styles.backArrowText, themed.text]}>←</Text>
           </AppPressable>
         ) : (
           <AppPressable style={styles.settingsBtn} onPress={() => setOptionsViewOpen(true)}>
@@ -3455,16 +3612,13 @@ export default function App() {
               mainTab === 'upload' && styles.mainTabBtnActive
             ]}
             onPress={() => setMainTab('upload')}
+            accessibilityLabel='Upload'
           >
-            <Text
-              style={[
-                styles.mainTabBtnText,
-                mainTab === 'upload' && styles.mainTabBtnTextActive,
-                mainTab === 'upload' ? themed.accentText : themed.text
-              ]}
-            >
-              Upload
-            </Text>
+            <Ionicons
+              name='cloud-upload-outline'
+              size={18}
+              color={mainTab === 'upload' ? theme.accent : theme.text}
+            />
           </AppPressable>
           <AppPressable
             style={[
@@ -3473,160 +3627,124 @@ export default function App() {
               mainTab === 'download' && styles.mainTabBtnActive
             ]}
             onPress={() => setMainTab('download')}
+            accessibilityLabel='Download'
           >
-            <Text
-              style={[
-                styles.mainTabBtnText,
-                mainTab === 'download' && styles.mainTabBtnTextActive,
-                mainTab === 'download' ? themed.accentText : themed.text
-              ]}
-            >
-              Download
-            </Text>
+            <Ionicons
+              name='cloud-download-outline'
+              size={18}
+              color={mainTab === 'download' ? theme.accent : theme.text}
+            />
           </AppPressable>
         </View>
       ) : null}
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView ref={uploadScrollRef} contentContainerStyle={styles.scrollContent}>
         {optionsViewOpen ? (
           renderOptionsView()
         ) : mainTab === 'upload' ? (
           <>
-            {renderWorkerPanel()}
-
-            <View style={styles.mainTabsRow}>
-              {(
-                [
-                  { key: 'host-new', label: 'Host New' },
-                  { key: 'hosts', label: 'Hosts' }
-                ] as Array<{ key: UploadView; label: string }>
-              ).map((tab) => (
-                <AppPressable
-                  key={tab.key}
-                  style={[
-                    styles.mainTabBtn,
-                    themed.panelSoft,
-                    uploadView === tab.key && styles.mainTabBtnActive
-                  ]}
-                  onPress={() => {
-                    setUploadView(tab.key)
-                    if (tab.key !== 'hosts') {
-                      setHostDetailInvite('')
-                      setHostDetailSourceRefs([])
-                      setHostDetailSelectedRefs(new Set())
-                    }
-                    if (tab.key === 'hosts') void refreshHosts()
-                  }}
-                >
-                  <Text
-                    style={[
-                      styles.mainTabBtnText,
-                      uploadView === tab.key && styles.mainTabBtnTextActive,
-                      uploadView === tab.key ? themed.accentText : themed.text
-                    ]}
-                  >
-                    {tab.label}
-                  </Text>
-                </AppPressable>
-              ))}
-            </View>
-
-            {uploadView === 'host-new' ? (
-              <View style={styles.inlineActions}>
-                <AppPressable style={[styles.primaryBtn, themed.accentBg]} onPress={onAddSource}>
-                  <Text style={styles.primaryBtnText}>+</Text>
-                </AppPressable>
-                <AppPressable
-                  style={[
-                    styles.secondaryBtn,
-                    themed.panelSoft,
-                    !visibleFiles.length && styles.rowBtnDisabled
-                  ]}
-                  onPress={toggleSelectAllLocalSources}
-                  disabled={!visibleFiles.length}
-                >
-                  <Text style={[styles.secondaryBtnText, themed.text]}>
-                    {visibleFiles.length > 0 &&
+            <View style={styles.inlineActions}>
+              <AppPressable
+                style={[styles.primaryBtn, themed.accentBg, styles.hostNewActionBtn]}
+                onPress={onAddSource}
+              >
+                <Text style={styles.primaryBtnText}>+</Text>
+              </AppPressable>
+              <AppPressable
+                style={[
+                  styles.secondaryBtn,
+                  themed.panelSoft,
+                  styles.hostNewActionBtn,
+                  !visibleFiles.length && styles.rowBtnDisabled
+                ]}
+                onPress={toggleSelectAllLocalSources}
+                disabled={!visibleFiles.length}
+                accessibilityLabel='Select all files'
+              >
+                <Ionicons
+                  name={
+                    visibleFiles.length > 0 &&
                     visibleFiles.every((item) => selected.has(String(item.id || '')))
-                      ? 'Deselect All'
-                      : 'Select All'}
-                  </Text>
-                </AppPressable>
-                <AppPressable
-                  style={[styles.rowBtn, themed.panelSoft, !selected.size && styles.rowBtnDisabled]}
-                  onPress={() => {
-                    Alert.alert(
-                      'Remove selected?',
-                      `Remove ${selected.size} selected source file(s)?`,
-                      [
-                        { text: 'Cancel', style: 'cancel' },
-                        { text: 'Remove', style: 'destructive', onPress: removeSelectedLocal }
-                      ]
-                    )
-                  }}
-                  disabled={!selected.size}
-                >
-                  <Text style={[styles.rowBtnText, themed.text, styles.rowDeleteText]}>✕</Text>
-                </AppPressable>
-                <AppPressable
-                  style={[
-                    styles.primaryBtn,
-                    themed.accentBg,
-                    (hostingBusy ||
-                      hostSelectedPending ||
-                      hostNameModalVisible ||
-                      selected.size === 0) &&
-                      styles.rowBtnDisabled
-                  ]}
-                  onPress={startHostNamePromptForSelected}
-                  disabled={
-                    hostingBusy ||
+                      ? 'checkbox-outline'
+                      : 'square-outline'
+                  }
+                  size={18}
+                  color={theme.text}
+                />
+              </AppPressable>
+              <AppPressable
+                style={[
+                  styles.rowBtn,
+                  themed.panelSoft,
+                  styles.hostNewActionBtn,
+                  !selected.size && styles.rowBtnDisabled
+                ]}
+                onPress={() => {
+                  Alert.alert(
+                    'Remove selected?',
+                    `Remove ${selected.size} selected source file(s)?`,
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Remove', style: 'destructive', onPress: removeSelectedLocal }
+                    ]
+                  )
+                }}
+                disabled={!selected.size}
+              >
+                {renderDesktopTrashIcon()}
+              </AppPressable>
+              <AppPressable
+                style={[
+                  styles.primaryBtn,
+                  themed.accentBg,
+                  styles.hostNewActionBtn,
+                  (hostingBusy ||
                     hostSelectedPending ||
                     hostNameModalVisible ||
-                    selected.size === 0
-                  }
-                >
-                  {hostingBusy || hostSelectedPending ? (
-                    <ActivityIndicator size='small' color='#fff' />
-                  ) : (
-                    <Text style={styles.primaryBtnText}>Host Selected</Text>
-                  )}
-                </AppPressable>
+                    selected.size === 0) &&
+                    styles.rowBtnDisabled
+                ]}
+                onPress={() =>
+                  hostingBusy || hostSelectedPending
+                    ? void cancelOperation(hostOperationIdRef.current)
+                    : startHostNamePromptForSelected()
+                }
+                disabled={
+                  (!hostingBusy && !hostSelectedPending) &&
+                  (hostNameModalVisible || selected.size === 0)
+                }
+                accessibilityLabel='Host selected files'
+              >
                 {hostingBusy || hostSelectedPending ? (
-                  <AppPressable
-                    style={[styles.secondaryBtn, themed.panelSoft]}
-                    onPress={() => void cancelOperation(hostOperationIdRef.current)}
-                  >
-                    <Text style={[styles.secondaryBtnText, themed.text]}>Cancel</Text>
-                  </AppPressable>
-                ) : null}
-              </View>
-            ) : null}
+                  <ActivityIndicator size='small' color='#fff' />
+                ) : (
+                  <Ionicons name='rocket-outline' size={18} color='#fff' />
+                )}
+              </AppPressable>
+            </View>
 
             <View style={styles.filesList}>
-              {workerBooting
-                ? renderStartupContainerSkeleton('upload')
-                : uploadView === 'hosts'
-                  ? renderHostContent()
-                  : renderFileList()}
+              {workerBooting ? renderStartupContainerSkeleton('upload') : renderFileList()}
             </View>
+            {renderHostContent()}
           </>
         ) : (
           <>
-            {renderWorkerPanel()}
-
-            <TextInput
-              value={inviteInput}
-              onChangeText={setInviteInput}
-              placeholder='Paste peardrops://invite...'
-              placeholderTextColor={theme.inputPlaceholder}
-              style={[styles.searchInput, themed.searchInput]}
-            />
-            <View style={styles.inlineActions}>
+            <View style={styles.inviteInputRow}>
+              <TextInput
+                value={inviteInput}
+                onChangeText={setInviteInput}
+                placeholder='Paste peardrops://invite...'
+                placeholderTextColor={theme.inputPlaceholder}
+                style={[styles.searchInput, themed.searchInput, styles.inviteInputRowField]}
+              />
               <AppPressable
                 style={[styles.primaryBtn, themed.accentBg, inviteLoading && styles.rowBtnDisabled]}
-                onPress={onDownload}
-                disabled={inviteLoading}
+                onPress={() =>
+                  inviteLoading
+                    ? void cancelOperation(inviteLoadOperationIdRef.current)
+                    : void onDownload()
+                }
               >
                 {inviteLoading ? (
                   <View style={styles.loadingInline}>
@@ -3634,17 +3752,11 @@ export default function App() {
                     <Text style={styles.primaryBtnText}>Loading...</Text>
                   </View>
                 ) : (
-                  <Text style={styles.primaryBtnText}>View Drive</Text>
+                  <Ionicons name='search-outline' size={18} color='#fff' />
                 )}
               </AppPressable>
-              {inviteLoading ? (
-                <AppPressable
-                  style={[styles.secondaryBtn, themed.panelSoft]}
-                  onPress={() => void cancelOperation(inviteLoadOperationIdRef.current)}
-                >
-                  <Text style={[styles.secondaryBtnText, themed.text]}>Cancel</Text>
-                </AppPressable>
-              ) : null}
+            </View>
+            <View style={styles.inlineActions}>
               {inviteMode ? (
                 <AppPressable
                   style={[
@@ -3654,15 +3766,20 @@ export default function App() {
                   ]}
                   onPress={toggleInviteSelectAll}
                   disabled={inviteDownloadBusy || !inviteEntries.length}
+                  accessibilityLabel='Select all invite files'
                 >
-                  <Text style={[styles.secondaryBtnText, themed.text]}>
-                    {inviteEntries.length > 0 &&
-                    inviteEntries.every((entry) =>
-                      inviteSelected.has(String(entry.drivePath || entry.name))
-                    )
-                      ? 'Deselect All'
-                      : 'Select All'}
-                  </Text>
+                  <Ionicons
+                    name={
+                      inviteEntries.length > 0 &&
+                      inviteEntries.every((entry) =>
+                        inviteSelected.has(String(entry.drivePath || entry.name))
+                      )
+                        ? 'checkbox-outline'
+                        : 'square-outline'
+                    }
+                    size={18}
+                    color={theme.text}
+                  />
                 </AppPressable>
               ) : null}
               {inviteMode ? (
@@ -3672,22 +3789,18 @@ export default function App() {
                     themed.panelSoft,
                     inviteDownloadBusy && styles.rowBtnDisabled
                   ]}
-                  onPress={() => void downloadInviteSelected()}
-                  disabled={inviteDownloadBusy}
+                  onPress={() =>
+                    inviteDownloadBusy
+                      ? void cancelOperation(inviteDownloadOperationIdRef.current)
+                      : void downloadInviteSelected()
+                  }
+                  accessibilityLabel='Download selected invite files'
                 >
                   {inviteDownloadBusy ? (
                     <ActivityIndicator size='small' color={theme.accent} />
                   ) : (
-                    <Text style={[styles.secondaryBtnText, themed.text]}>Download Selected</Text>
+                    <Ionicons name='download-outline' size={18} color={theme.text} />
                   )}
-                </AppPressable>
-              ) : null}
-              {inviteMode && inviteDownloadBusy ? (
-                <AppPressable
-                  style={[styles.secondaryBtn, themed.panelSoft]}
-                  onPress={() => void cancelOperation(inviteDownloadOperationIdRef.current)}
-                >
-                  <Text style={[styles.secondaryBtnText, themed.text]}>Cancel</Text>
                 </AppPressable>
               ) : null}
             </View>
@@ -3774,13 +3887,41 @@ export default function App() {
                 style={[styles.rowBtn, themed.panelSoft]}
                 onPress={dismissHostNameModal}
               >
-                <Text style={[styles.rowBtnText, themed.text]}>Cancel</Text>
+                <Ionicons name='close-outline' size={16} color={theme.text} />
               </AppPressable>
               <AppPressable
                 style={[styles.primaryBtn, themed.accentBg]}
                 onPress={() => void submitHostNameModal()}
               >
                 <Text style={styles.primaryBtnText}>Start</Text>
+              </AppPressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={sessionNameEditVisible}
+        transparent
+        animationType='fade'
+        onRequestClose={closeSessionNameEditor}
+      >
+        <View style={styles.folderModalRoot}>
+          <AppPressable style={styles.folderModalBackdrop} onPress={closeSessionNameEditor} />
+          <View style={[styles.folderModalCard, themed.panel]}>
+            <Text style={[styles.folderModalTitle, themed.text]}>Edit session name</Text>
+            <TextInput
+              value={sessionNameEditDraft}
+              onChangeText={setSessionNameEditDraft}
+              placeholder='Host Session'
+              style={[styles.folderInput, themed.panelSoft, themed.text]}
+            />
+            <View style={styles.folderModalActions}>
+              <AppPressable style={[styles.rowBtn, themed.panelSoft]} onPress={closeSessionNameEditor}>
+                <Ionicons name='close-outline' size={16} color={theme.text} />
+              </AppPressable>
+              <AppPressable style={[styles.primaryBtn, themed.accentBg]} onPress={applySessionNameEdit}>
+                <Ionicons name='checkmark-outline' size={18} color='#fff' />
               </AppPressable>
             </View>
           </View>
@@ -4812,7 +4953,27 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
     marginHorizontal: 16,
-    marginTop: 8
+    marginTop: 10
+  },
+  inviteInputRow: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
+  },
+  inviteInputRowField: {
+    flex: 1,
+    marginTop: 0,
+    marginHorizontal: 0
+  },
+  hostNewActionBtn: {
+    width: 42,
+    minHeight: 42,
+    height: 42,
+    borderRadius: 10,
+    paddingHorizontal: 0,
+    paddingVertical: 0
   },
   inviteRow: {
     marginHorizontal: 16,
@@ -4844,45 +5005,6 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     alignItems: 'center',
     gap: 8
-  },
-  activityPanel: {
-    marginHorizontal: 16,
-    marginTop: 8,
-    borderWidth: 1,
-    borderColor: '#d9d9d9',
-    borderRadius: 14,
-    backgroundColor: '#fff',
-    padding: 12,
-    gap: 5
-  },
-  ingestWrap: {
-    marginTop: 4
-  },
-  ingestLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8
-  },
-  ingestLabel: {
-    fontSize: 12,
-    marginBottom: 4,
-    flexShrink: 1
-  },
-  ingestSubLabel: {
-    fontSize: 11,
-    opacity: 0.9,
-    marginBottom: 4
-  },
-  ingestTrack: {
-    width: '100%',
-    height: 8,
-    borderRadius: 999,
-    overflow: 'hidden'
-  },
-  ingestFill: {
-    height: '100%',
-    width: '0%'
   },
   bulkText: {
     color: '#636363',
@@ -4949,9 +5071,37 @@ const styles = StyleSheet.create({
     color: '#fff'
   },
   filesList: {
-    marginTop: 8,
+    marginTop: 10,
     marginHorizontal: 16,
     gap: 10
+  },
+  emptyFileDropzone: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#d8dce3',
+    minHeight: 220,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 26,
+    gap: 10
+  },
+  emptyFileIconWrap: {
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#d8dce3'
+  },
+  emptyFileDropzoneTitle: {
+    fontSize: 18,
+    fontWeight: '700'
+  },
+  emptyFileDropzoneSub: {
+    fontSize: 13,
+    textAlign: 'center'
   },
   inviteLoaderCard: {
     backgroundColor: '#fff',
@@ -4973,30 +5123,39 @@ const styles = StyleSheet.create({
     fontWeight: '700'
   },
   hostSection: {
-    gap: 10
+    marginHorizontal: 16,
+    marginTop: 4,
+    paddingTop: 2,
+    gap: 12
   },
-  hostSectionHead: {
+  sectionBar: {
+    width: '100%',
+    minHeight: 38,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#d8dce3',
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 10
+  },
+  sectionBarLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8
   },
-  hostSectionTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1f1f1f',
-    marginTop: 4,
-    flex: 1
+  sectionBarCount: {
+    fontSize: 13,
+    fontWeight: '700'
+  },
+  peerCard: {
+    gap: 0
   },
   hostSectionActions: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6
-  },
-  hostSectionMeta: {
-    fontSize: 12,
-    fontWeight: '600',
-    minWidth: 10,
-    textAlign: 'right'
   },
   hostCard: {
     backgroundColor: '#fff',
@@ -5005,6 +5164,14 @@ const styles = StyleSheet.create({
     borderColor: '#d8dce3',
     padding: 12,
     gap: 6
+  },
+  hostCardGlow: {
+    borderColor: '#1ba344',
+    shadowColor: '#1ba344',
+    shadowOpacity: 0.32,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 6
   },
   hostCardHead: {
     flexDirection: 'row',
@@ -5224,6 +5391,16 @@ const styles = StyleSheet.create({
   rowBtnDisabled: {
     opacity: 0.5
   },
+  backArrowBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  backArrowText: {
+    fontSize: 22,
+    fontWeight: '600'
+  },
   pressFeedback: {
     opacity: 0.78
   },
@@ -5247,32 +5424,15 @@ const styles = StyleSheet.create({
     color: '#4a4a4a',
     fontSize: 12
   },
-  status: {
-    color: '#6f6f6f',
-    fontSize: 12,
-    fontWeight: '600'
-  },
   viewTitle: {
     fontSize: 24,
     fontWeight: '700',
     color: '#1f1f1f',
     flex: 1
   },
-  workerLog: {
-    color: '#6f6f6f',
-    fontSize: 12
-  },
   workerBootSkeletonWrap: {
     marginTop: 6,
     gap: 6
-  },
-  workerPanelSkeletonCard: {
-    marginTop: 6,
-    minHeight: 92,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#d7dfea',
-    overflow: 'hidden'
   },
   skeletonBlock: {
     flex: 1
