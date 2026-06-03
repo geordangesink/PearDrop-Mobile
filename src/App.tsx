@@ -289,7 +289,7 @@ function getTheme(isDark: boolean) {
 
 export default function App() {
   const systemScheme = useColorScheme()
-  const [status, setStatus] = useState('Starting worker...')
+  const setStatus = (_message: string) => {}
   const [workerBooting, setWorkerBooting] = useState(true)
   const [inviteInput, setInviteInput] = useState('')
   const [mainTab, setMainTab] = useState<MainTab>('upload')
@@ -333,7 +333,7 @@ export default function App() {
   const [stoppingInvites, setStoppingInvites] = useState<Set<string>>(new Set())
   const [stoppingSelectedHosts, setStoppingSelectedHosts] = useState(false)
   const [rehostingHistoryKeys, setRehostingHistoryKeys] = useState<Set<string>>(new Set())
-  const [workerActivityBars, setWorkerActivityBars] = useState<WorkerActivityBar[]>([])
+  const [, setWorkerActivityBars] = useState<WorkerActivityBar[]>([])
   const [themeMode, setThemeMode] = useState<ThemeMode>('system')
   const [optionsViewOpen, setOptionsViewOpen] = useState(false)
   const [copyFeedbackKey, setCopyFeedbackKey] = useState('')
@@ -4716,17 +4716,6 @@ function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
-function formatEta(ms: number) {
-  const totalSeconds = Math.max(0, Math.ceil(Number(ms || 0) / 1000))
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  if (minutes <= 0) return `${seconds}s`
-  if (minutes < 60) return `${minutes}m ${seconds}s`
-  const hours = Math.floor(minutes / 60)
-  const remMinutes = minutes % 60
-  return `${hours}h ${remMinutes}m`
 }
 
 function fileExt(name: string) {
