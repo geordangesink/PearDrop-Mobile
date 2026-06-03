@@ -813,9 +813,7 @@ export default function App() {
   useEffect(() => {
     const name = String(peerName || '').trim()
     if (!name || !onboardingDone) return
-    void rpc
-      .request(RpcCommand.SET_PEER_PROFILE, { name })
-      .catch(() => {})
+    void rpc.request(RpcCommand.SET_PEER_PROFILE, { name }).catch(() => {})
   }, [rpc, peerName, onboardingDone])
 
   useEffect(() => {
@@ -929,8 +927,7 @@ export default function App() {
       const hasActiveDownload = inviteDownloadBusyRef.current
       const hasHostStartupInFlight = hostStartupBusyRef.current
       const keepWorkerAlive =
-        stateText !== 'active' &&
-        (hasActiveHosting || hasActiveDownload || hasHostStartupInFlight)
+        stateText !== 'active' && (hasActiveHosting || hasActiveDownload || hasHostStartupInFlight)
       if (!keepWorkerAlive) {
         try {
           workletRef.current?.update?.(nextState)
@@ -1038,7 +1035,8 @@ export default function App() {
     void (async () => {
       try {
         const perms = await Notifications.getPermissionsAsync()
-        let granted = perms.granted || perms.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL
+        let granted =
+          perms.granted || perms.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL
         if (!granted) {
           const requested = await Notifications.requestPermissionsAsync()
           granted =
@@ -1120,7 +1118,9 @@ export default function App() {
             if (!id || id <= prev) continue
             next = Math.max(next, id)
             const type = String(event?.type || '').toLowerCase()
-            if (!['joined', 'started', 'downloading', 'aborted', 'completed', 'left'].includes(type)) {
+            if (
+              !['joined', 'started', 'downloading', 'aborted', 'completed', 'left'].includes(type)
+            ) {
               continue
             }
             const label = formatPeerLabel(
@@ -1128,20 +1128,22 @@ export default function App() {
               String(event?.peerHex4 || '')
             )
             const session = String(event?.sessionName || 'Host Session')
-            const peerKey = String(event?.peerKeyHex || event?.peerHex4 || event?.peerName || 'peer')
+            const peerKey = String(
+              event?.peerKeyHex || event?.peerHex4 || event?.peerName || 'peer'
+            )
             const notifyKey = `${peerKey}:${session}`
             const message =
               type === 'joined'
                 ? `joined ${session}`
                 : type === 'downloading'
                   ? `is downloading ${session}`
-                : type === 'started'
-                  ? `started downloading ${session}`
-                : type === 'aborted'
-                  ? `aborted downloading ${session}`
-                  : type === 'left'
-                    ? `left ${session}`
-                    : `downloaded ${session}`
+                  : type === 'started'
+                    ? `started downloading ${session}`
+                    : type === 'aborted'
+                      ? `aborted downloading ${session}`
+                      : type === 'left'
+                        ? `left ${session}`
+                        : `downloaded ${session}`
             setWorkerLogMessage(message)
             const last = peerNotifyStateRef.current.get(notifyKey) || ''
             if (type === 'downloading' && last === 'downloading') continue
@@ -1798,7 +1800,11 @@ export default function App() {
     setHostSelectedPending(false)
   }
 
-  const openSessionNameEditor = (opts: { invite?: string; historyKey?: string; current?: string }) => {
+  const openSessionNameEditor = (opts: {
+    invite?: string
+    historyKey?: string
+    current?: string
+  }) => {
     setSessionNameEditInvite(String(opts.invite || '').trim())
     setSessionNameEditHistoryKey(String(opts.historyKey || '').trim())
     setSessionNameEditDraft(String(opts.current || 'Host Session').trim() || 'Host Session')
@@ -2513,9 +2519,7 @@ export default function App() {
     const keys = items.map((item) => historyEntryKey(item)).filter(Boolean)
     if (!keys.length) return
     const invitesToRemove = new Set(
-      items
-        .map((item) => String(item?.invite || '').trim())
-        .filter(Boolean)
+      items.map((item) => String(item?.invite || '').trim()).filter(Boolean)
     )
     const removeSet = new Set(keys)
     setHostHistory((prev) => prev.filter((item) => !removeSet.has(historyEntryKey(item))))
@@ -2820,17 +2824,20 @@ export default function App() {
         </View>
         {hostPeerRows.length ? (
           hostPeerRows.slice(0, 8).map((row) => {
-              const progress = Math.max(0, Math.min(100, Math.round(Number(row?.progress || 0) * 100)))
-              const statusText = String(row?.status || '').toLowerCase()
-              const isComplete = statusText === 'completed'
-              const isJoined = statusText === 'joined'
-              const isDownloading = statusText === 'downloading'
-              return (
-                <View
-                  key={String(row?.id || Math.random())}
-                  style={[styles.hostCard, themed.panel, styles.peerCard]}
-                >
-                  <View style={styles.peerRow}>
+            const progress = Math.max(
+              0,
+              Math.min(100, Math.round(Number(row?.progress || 0) * 100))
+            )
+            const statusText = String(row?.status || '').toLowerCase()
+            const isComplete = statusText === 'completed'
+            const isJoined = statusText === 'joined'
+            const isDownloading = statusText === 'downloading'
+            return (
+              <View
+                key={String(row?.id || Math.random())}
+                style={[styles.hostCard, themed.panel, styles.peerCard]}
+              >
+                <View style={styles.peerRow}>
                   <View style={styles.peerRowMain}>
                     <Text style={[styles.fileName, themed.text]}>
                       {formatPeerLabel(String(row?.peerName || ''), String(row?.peerHex4 || ''))}
@@ -2854,12 +2861,12 @@ export default function App() {
                           : `${progress}%`}
                   </Text>
                 </View>
-                </View>
-              )
-            })
-          ) : (
-            <Text style={[styles.muted, themed.muted]}>No peers connected</Text>
-          )}
+              </View>
+            )
+          })
+        ) : (
+          <Text style={[styles.muted, themed.muted]}>No peers connected</Text>
+        )}
 
         <View style={[styles.sectionBar, themed.panelSoft]}>
           <View style={styles.sectionBarLeft}>
@@ -3072,7 +3079,9 @@ export default function App() {
                   >
                     <Text style={[styles.hostCardTitle, themed.text]}>
                       {label.title}
-                      {label.hash ? <Text style={styles.hostHashInline}> ({label.hash})</Text> : null}
+                      {label.hash ? (
+                        <Text style={styles.hostHashInline}> ({label.hash})</Text>
+                      ) : null}
                     </Text>
                     <Text style={[styles.hostMetaDate, themed.muted]}>{dateLine || '—'}</Text>
                     <Text style={[styles.hostMetaSize, themed.muted]}>
@@ -3252,7 +3261,9 @@ export default function App() {
                   >
                     <Text style={[styles.hostCardTitle, themed.text]}>
                       {label.title}
-                      {label.hash ? <Text style={styles.hostHashInline}> ({label.hash})</Text> : null}
+                      {label.hash ? (
+                        <Text style={styles.hostHashInline}> ({label.hash})</Text>
+                      ) : null}
                     </Text>
                     <Text style={[styles.hostMetaDate, themed.muted]}>{dateLine || '—'}</Text>
                     <Text style={[styles.hostMetaSize, themed.muted]}>
@@ -3300,9 +3311,7 @@ export default function App() {
                     disabled={!String(item?.invite || '').trim()}
                   >
                     <Ionicons
-                      name={
-                        starredHosts.has(String(item?.invite || '')) ? 'star' : 'star-outline'
-                      }
+                      name={starredHosts.has(String(item?.invite || '')) ? 'star' : 'star-outline'}
                       size={16}
                       color={theme.text}
                     />
@@ -3625,9 +3634,7 @@ export default function App() {
         <View style={styles.onboardingShell}>
           <View style={[styles.onboardingCard, themed.panel]}>
             <Text style={[styles.onboardingTitle, themed.text]}>Loading PearDrop…</Text>
-            <Text style={[styles.onboardingCopy, themed.muted]}>
-              Checking your saved setup.
-            </Text>
+            <Text style={[styles.onboardingCopy, themed.muted]}>Checking your saved setup.</Text>
             <View style={styles.onboardingSpinnerRow}>
               <ActivityIndicator size='small' color={theme.accent} />
             </View>
@@ -3698,10 +3705,7 @@ export default function App() {
 
       <View style={[styles.topHeader, themed.container]}>
         {optionsViewOpen ? (
-          <AppPressable
-            style={styles.backArrowBtn}
-            onPress={() => setOptionsViewOpen(false)}
-          >
+          <AppPressable style={styles.backArrowBtn} onPress={() => setOptionsViewOpen(false)}>
             <Text style={[styles.backArrowText, themed.text]}>←</Text>
           </AppPressable>
         ) : (
@@ -3821,7 +3825,8 @@ export default function App() {
                     : startHostNamePromptForSelected()
                 }
                 disabled={
-                  (!hostingBusy && !hostSelectedPending) &&
+                  !hostingBusy &&
+                  !hostSelectedPending &&
                   (hostNameModalVisible || selected.size === 0)
                 }
                 accessibilityLabel='Host selected files'
@@ -4032,10 +4037,16 @@ export default function App() {
               style={[styles.folderInput, themed.panelSoft, themed.text]}
             />
             <View style={styles.folderModalActions}>
-              <AppPressable style={[styles.rowBtn, themed.panelSoft]} onPress={closeSessionNameEditor}>
+              <AppPressable
+                style={[styles.rowBtn, themed.panelSoft]}
+                onPress={closeSessionNameEditor}
+              >
                 <Ionicons name='close-outline' size={16} color={theme.text} />
               </AppPressable>
-              <AppPressable style={[styles.primaryBtn, themed.accentBg]} onPress={applySessionNameEdit}>
+              <AppPressable
+                style={[styles.primaryBtn, themed.accentBg]}
+                onPress={applySessionNameEdit}
+              >
                 <Ionicons name='checkmark-outline' size={18} color='#fff' />
               </AppPressable>
             </View>
