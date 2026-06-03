@@ -44,7 +44,6 @@
     "expo-haptics": "^55.0.14",
     "expo-image-picker": "~55.0.19",
     "expo-media-library": "~55.0.14",
-    "expo-notifications": "~55.0.23",
     "expo-status-bar": "~55.0.5",
     "fflate": "^0.8.2",
     "pear-drop-core": "^0.9.6",
