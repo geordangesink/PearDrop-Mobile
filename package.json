@@ -44,7 +44,7 @@
     "expo-notifications": "~55.0.23",
     "expo-status-bar": "~55.0.5",
     "fflate": "^0.8.2",
-    "pear-drop-core": "file:../native-shared/pear-drop-core-0.9.5.tgz",
+    "pear-drop-core": "^0.9.6",
     "pear-mobile": "^4.2.0",
     "pear-runtime-react-native": "^2.0.1",
     "pear-suspension": "^0.0.3",
