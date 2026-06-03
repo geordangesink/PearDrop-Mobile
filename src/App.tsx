@@ -31,6 +31,7 @@ import * as MediaLibrary from 'expo-media-library'
 import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'
 import * as Notifications from 'expo-notifications'
+import Constants from 'expo-constants'
 import RPC from 'bare-rpc'
 import b4a from 'b4a'
 import { zipSync } from 'fflate'
@@ -181,6 +182,44 @@ const ACTION_ICON_PLAY = '▶'
 const ACTION_ICON_COPY = '⧉'
 const ACTION_ICON_STOP = '■'
 
+function relayWsToHttp(relayUrl: string, endpointPath: string) {
+  try {
+    const url = new URL(String(relayUrl || '').trim())
+    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') return ''
+    url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:'
+    url.pathname = endpointPath
+    url.search = ''
+    url.hash = ''
+    return url.toString()
+  } catch {
+    return ''
+  }
+}
+
+async function postJsonWithRetry(url: string, body: any, attempts = 3) {
+  let lastStatus = 0
+  let lastError = ''
+  for (let i = 0; i < Math.max(1, attempts); i++) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body || {})
+      })
+      if (response.ok) {
+        const data = await response.json().catch(() => ({}))
+        return { ok: true, status: response.status, data }
+      }
+      lastStatus = response.status
+      lastError = await response.text().catch(() => '')
+    } catch (error: any) {
+      lastError = String(error?.message || error || 'request failed')
+    }
+    if (i < attempts - 1) await sleep(250 * (i + 1))
+  }
+  return { ok: false, status: lastStatus, error: lastError }
+}
+
 function AppPressable({ style, onPressIn, android_ripple, ...props }: PressableProps) {
   return (
     <RNPressable
@@ -301,6 +340,7 @@ export default function App() {
   const [peerName, setPeerName] = useState('')
   const [onboardingDone, setOnboardingDone] = useState(false)
   const [hostPeerRows, setHostPeerRows] = useState<any[]>([])
+  const [pushTargetId, setPushTargetId] = useState('')
   const [highlightedHostInvite, setHighlightedHostInvite] = useState('')
   const [, setHostPeerLastEventId] = useState(0)
   const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -376,6 +416,11 @@ export default function App() {
     try {
       await rpc.request(RpcCommand.CANCEL_OPERATION, { operationId: opId })
     } catch {}
+  }
+
+  const cancelOperationOptimistic = (operationId: string, resetUi: () => void) => {
+    resetUi()
+    void cancelOperation(operationId)
   }
 
   const formatPeerLabel = (name: string, hex4: string) => {
@@ -1001,6 +1046,39 @@ export default function App() {
             requested.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL
         }
         notificationsEnabledRef.current = Boolean(granted)
+        if (!granted) return
+        const extra = (Constants?.expoConfig?.extra || {}) as Record<string, any>
+        const projectId =
+          String(extra?.eas?.projectId || '') || String(Constants?.easConfig?.projectId || '')
+        const tokenResult = await Notifications.getExpoPushTokenAsync(
+          projectId ? { projectId } : undefined
+        )
+        const expoPushToken = String(tokenResult?.data || '').trim()
+        if (!expoPushToken) return
+        const registerEndpoint = relayWsToHttp(resolvedRelayUrl, '/push/register')
+        if (!registerEndpoint) return
+        const registerResult = await postJsonWithRetry(
+          registerEndpoint,
+          {
+            expoPushToken,
+            platform: Platform.OS,
+            appId: String(Constants?.expoConfig?.slug || 'peardrops-mobile')
+          },
+          5
+        )
+        if (!registerResult.ok) {
+          setWorkerLogMessage(
+            `push register failed (${registerResult.status || 'network'}): ${String(
+              registerResult.error || ''
+            )}`
+          )
+          return
+        }
+        const nextTarget = String(registerResult.data?.pushTarget || '').trim()
+        if (nextTarget) {
+          setPushTargetId(nextTarget)
+          setWorkerLogMessage('push registration active')
+        }
       } catch {
         notificationsEnabledRef.current = false
       }
@@ -1295,6 +1373,7 @@ export default function App() {
         files: payload,
         sessionName,
         hostMode: effectivePackaging,
+        pushTarget: pushTargetId,
         operationId
       })
       upsertWorkerActivityBar('host', 'Generating invite...', 4, 5)
@@ -1485,7 +1564,8 @@ export default function App() {
         String(host.sessionLabel || host.sessionName || 'Host Session').trim() || 'Host Session'
       const result = await rpc.request(RpcCommand.CREATE_UPLOAD, {
         files: prepared.payload,
-        sessionName
+        sessionName,
+        pushTarget: pushTargetId
       })
       const nextInvite = String(result?.nativeInvite || result?.invite || '').trim()
       setHostHistory((prev) =>
@@ -1614,7 +1694,8 @@ export default function App() {
         if (prepared.payload.length) {
           result = await rpc.request(RpcCommand.CREATE_UPLOAD, {
             files: prepared.payload,
-            sessionName
+            sessionName,
+            pushTarget: pushTargetId
           })
           resolvedRefs = prepared.keptRefs
         }
@@ -1623,7 +1704,8 @@ export default function App() {
       if (!result) {
         result = await rpc.request(RpcCommand.START_HOST_FROM_TRANSFER, {
           transferId,
-          sessionName
+          sessionName,
+          pushTarget: pushTargetId
         })
       }
       upsertWorkerActivityBar('host', 'Preparing invite...', 2, 3)
@@ -1772,6 +1854,7 @@ export default function App() {
     }
 
     try {
+      void sendJoinPushPing(invite, 'Host Session')
       const operationId = newOperationId()
       inviteLoadOperationIdRef.current = operationId
       setInviteLoading(true)
@@ -2025,6 +2108,7 @@ export default function App() {
     setWorkerLogMessage('preparing selected invite files')
     const normalizedPeerName = String(peerName || '').trim()
     try {
+      void sendJoinPushPing(inviteSource, 'Host Session')
       const shouldDownload = true
       const allMediaForIosPhotos =
         Platform.OS === 'ios' &&
@@ -2322,6 +2406,30 @@ export default function App() {
       setInviteDownloadBusy(false)
       clearWorkerActivityBar('download')
     }
+  }
+
+  const sendJoinPushPing = async (inviteRaw: string, sessionName: string) => {
+    try {
+      const invite = extractInviteUrl(String(inviteRaw || '').trim())
+      if (!invite) return
+      const url = new URL(invite)
+      const pushTarget = String(url.searchParams.get('push') || '').trim()
+      if (!pushTarget) return
+      const relayUrl = String(url.searchParams.get('relay') || resolvedRelayUrl || '').trim()
+      const endpoint = relayWsToHttp(relayUrl, '/push/join-request')
+      if (!endpoint) return
+      const normalizedPeerName = String(peerName || '').trim()
+      await postJsonWithRetry(
+        endpoint,
+        {
+          pushTarget,
+          invite,
+          sessionName: String(sessionName || 'Host Session').trim() || 'Host Session',
+          peerName: normalizedPeerName
+        },
+        3
+      )
+    } catch {}
   }
 
   const removeFilesByIds = (ids: string[]) => {
@@ -3706,7 +3814,10 @@ export default function App() {
                 ]}
                 onPress={() =>
                   hostingBusy || hostSelectedPending
-                    ? void cancelOperation(hostOperationIdRef.current)
+                    ? cancelOperationOptimistic(hostOperationIdRef.current, () => {
+                        setHostingBusy(false)
+                        setHostSelectedPending(false)
+                      })
                     : startHostNamePromptForSelected()
                 }
                 disabled={
@@ -3742,7 +3853,9 @@ export default function App() {
                 style={[styles.primaryBtn, themed.accentBg, inviteLoading && styles.rowBtnDisabled]}
                 onPress={() =>
                   inviteLoading
-                    ? void cancelOperation(inviteLoadOperationIdRef.current)
+                    ? cancelOperationOptimistic(inviteLoadOperationIdRef.current, () => {
+                        setInviteLoading(false)
+                      })
                     : void onDownload()
                 }
               >
@@ -3791,7 +3904,9 @@ export default function App() {
                   ]}
                   onPress={() =>
                     inviteDownloadBusy
-                      ? void cancelOperation(inviteDownloadOperationIdRef.current)
+                      ? cancelOperationOptimistic(inviteDownloadOperationIdRef.current, () => {
+                          setInviteDownloadBusy(false)
+                        })
                       : void downloadInviteSelected()
                   }
                   accessibilityLabel='Download selected invite files'
@@ -3893,7 +4008,7 @@ export default function App() {
                 style={[styles.primaryBtn, themed.accentBg]}
                 onPress={() => void submitHostNameModal()}
               >
-                <Text style={styles.primaryBtnText}>Start</Text>
+                <Ionicons name='rocket-outline' size={18} color='#fff' />
               </AppPressable>
             </View>
           </View>
