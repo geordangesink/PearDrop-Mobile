@@ -7,7 +7,7 @@
   "scripts": {
     "postinstall": "node scripts/patch-expo-constants-podspec.cjs",
     "eas-build-post-install": "npm run bundle:bare",
-    "bundle:bare": "npx bare-pack --host ios-arm64 --host ios-arm64-simulator --host ios-x64-simulator --host android-arm64 --linked --out ./src/worker.bundle.js ./workers/index.js",
+    "bundle:bare": "node scripts/regenerate-barekit-addons.cjs && npx bare-pack --host ios-arm64 --host ios-arm64-simulator --host ios-x64-simulator --host android-arm64 --linked --out ./src/worker.bundle.js ./workers/index.js",
     "bundle:react-native": "npx react-native bundle --platform ios --dev false --entry-file index.ts --bundle-output ota/ios/PearDrop/app.bundle --assets-dest ota/ios/PearDrop && npx react-native bundle --platform android --dev false --entry-file index.ts --bundle-output ota/android/PearDrop/app.bundle --assets-dest ota/android/PearDrop",
     "build": "npx pear-build --ios-arm64 ./ota/ios/PearDrop --ios-arm64-simulator ./ota/ios/PearDrop --ios-x64-simulator ./ota/ios/PearDrop --android-arm64 ./ota/android/PearDrop --package ./package.json --target upgrade",
     "update": "npm run bundle:bare && npm run bundle:react-native && npm run build",
@@ -67,5 +67,8 @@
     "prettier-config-holepunch": "^2.0.0",
     "typescript": "~5.9.2"
   },
-  "private": true
+  "private": true,
+  "overrides": {
+    "sodium-universal": "^5.0.1"
+  }
 }
