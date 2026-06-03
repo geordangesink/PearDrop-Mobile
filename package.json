@@ -1,7 +1,7 @@
 {
   "name": "pear-drops-mobile",
   "productName": "PearDrop",
-  "version": "1.0.1",
+  "version": "1.0.4",
   "upgrade": "pear://ididi1cou1u7fcai161tc3ejggn1opm6ufcrzfz5dt8gymi1889y",
   "main": "index.ts",
   "scripts": {
@@ -27,12 +27,14 @@
   "author": "",
   "license": "Apache-2.0",
   "dependencies": {
+    "@expo/vector-icons": "^15.1.1",
     "@hyperswarm/dht-relay": "^0.4.3",
     "b4a": "^1.8.0",
     "bare-path": "^3.0.0",
     "bare-rpc": "^1.1.0",
     "bare-storage": "^1.1.0",
     "expo": "~55.0.11",
+    "expo-asset": "~55.0.17",
     "expo-build-properties": "~55.0.11",
     "expo-clipboard": "~55.0.11",
     "expo-crypto": "~15.0.7",
