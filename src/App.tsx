@@ -36,6 +36,7 @@ import RPC from 'bare-rpc'
 import b4a from 'b4a'
 import { zipSync } from 'fflate'
 import { Worklet } from 'react-native-bare-kit'
+import mobilePackage from '../package.json'
 import bundle from './worker.bundle.js'
 // @ts-ignore
 import { extractInviteUrl, extractShareInviteUrl } from './lib/invite'
@@ -251,13 +252,19 @@ type PersistedMetadata = {
 const envRelay =
   typeof process !== 'undefined' ? String(process.env?.EXPO_PUBLIC_RELAY_URL || '').trim() : ''
 const resolvedRelayUrl = envRelay || (__DEV__ ? DEFAULT_DEV_RELAY : DEFAULT_PROD_RELAY)
+const appPackage = mobilePackage as {
+  productName?: string
+  version?: string
+  upgrade?: string
+}
 
 const updaterConfig = {
   dev: __DEV__,
-  version: '0.1.0',
-  upgrade: 'pear://updates-disabled',
+  name: String(appPackage.productName || 'PearDrop'),
+  version: String(appPackage.version || '0.0.0'),
+  upgrade: String(appPackage.upgrade || ''),
   relayUrl: resolvedRelayUrl,
-  updates: !__DEV__
+  updates: true
 }
 
 function getTheme(isDark: boolean) {
