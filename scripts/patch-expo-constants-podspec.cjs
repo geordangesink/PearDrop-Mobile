@@ -21,13 +21,7 @@ const badgeModulePath = path.join(
   'Badge',
   'BadgeModule.swift'
 )
-const siphashIndexPath = path.join(
-  __dirname,
-  '..',
-  'node_modules',
-  'siphash24',
-  'index.js'
-)
+const siphashIndexPath = path.join(__dirname, '..', 'node_modules', 'siphash24', 'index.js')
 
 function patchPodspec(source) {
   let out = source

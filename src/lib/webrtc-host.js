@@ -367,7 +367,9 @@ function bindDataChannel(channel, { invite, rpc }) {
   const emitState = { lastType: '', lastProgress: -1, lastAt: 0 }
   const reportPeer = (type, progress = undefined) => {
     const now = Date.now()
-    const normalizedType = String(type || '').trim().toLowerCase()
+    const normalizedType = String(type || '')
+      .trim()
+      .toLowerCase()
     const normalizedProgress = Number.isFinite(Number(progress))
       ? Math.max(0, Math.min(1, Number(progress)))
       : -1
